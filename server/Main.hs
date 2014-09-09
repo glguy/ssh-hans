@@ -58,8 +58,8 @@ supportedKex sshCookie =
   SshKeyExchange { sshKexAlgs           = [ "diffie-hellman-group1-sha1" ]
                  , sshServerHostKeyAlgs = [ "ssh-dss" ]
                  , sshEncAlgs           = SshAlgs [ "3des-cbc" ] [ "3des-cbc" ]
-                 , sshMacAlgs           = SshAlgs [ "hmac-sha1" ] [ ]
-                 , sshCompAlgs          = SshAlgs [] []
+                 , sshMacAlgs           = SshAlgs [ "hmac-sha1" ] [ "hmac-sha1" ]
+                 , sshCompAlgs          = SshAlgs [ "none" ] [ "none" ]
                  , sshLanguages         = SshAlgs [] []
                  , sshFirstKexFollows   = False
                  , ..

@@ -93,8 +93,13 @@ putSshPacket mbCbSize render a =
 
   bytesRem   = (4 + 1 + bytesLen) `mod` align
 
-  paddingLen | bytesRem == 0 = 0
+  -- number of bytes needed to align on block size
+  alignBytes | bytesRem == 0 = 0
              | otherwise     = align - bytesRem
+
+  paddingLen | alignBytes == 0 =              align
+             | alignBytes <  4 = alignBytes + align
+             | otherwise       = alignBytes
 
   padding = S.replicate paddingLen 0x0
 
