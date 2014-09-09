@@ -101,6 +101,7 @@ putSshPacket mbCbSize render a =
              | alignBytes <  4 = alignBytes + align
              | otherwise       = alignBytes
 
+  -- XXX the padding SHOULD be random bytes, so this should probably change
   padding = S.replicate paddingLen 0x0
 
 putSshKeyExchange :: Putter SshKeyExchange
