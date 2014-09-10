@@ -49,7 +49,7 @@ sayHello client =
      print msg
      case msg of
        Right ident -> do print ident
-                         startKex client ident
+                         startKex client
        Left err    -> return ()
 
 
@@ -70,13 +70,19 @@ newCookie g = (SshCookie bytes, g')
   where
   (bytes,g') = genBytes 16 g
 
-startKex :: Handle -> SshIdent -> IO ()
-startKex client ident =
+startKex :: Handle -> IO ()
+startKex client =
   do gen <- newGenIO
      let (cookie,gen') = newCookie gen
      S.hPutStr client (runPut (putSshPacket Nothing putSshKeyExchange (supportedKex cookie)))
 
      msg <- parseFrom client (getSshPacket Nothing getSshKeyExchange)
      case msg of
-       Right pkt -> print pkt
-       Left err  -> print err
+       Right pkt -> do print pkt
+                       startDh client gen
+       Left err  ->    print err
+
+startDh :: Handle -> CtrDRBG -> IO ()
+startDh client gen =
+  do msg <- parseFrom client (getSshPacket Nothing getSshKexDhInit)
+     print msg

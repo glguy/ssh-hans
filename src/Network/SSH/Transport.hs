@@ -4,9 +4,10 @@
 module Network.SSH.Transport where
 
 import           Control.Monad ( guard, msum, unless )
+import           Data.Bits ( shiftR, shiftL, (.&.), testBit )
 import qualified Data.ByteString as S
 import           Data.Char ( chr, ord )
-import           Data.List ( intersperse )
+import           Data.List ( intersperse, genericLength )
 import           Data.Serialize
                      ( Get, Putter, getWord8, putWord8, putByteString, label
                      , putWord32be, getWord32be, isolate, getBytes, remaining
@@ -29,6 +30,10 @@ data SshAlgs = SshAlgs { sshClientToServer :: [S.ByteString]
                        , sshServerToClient :: [S.ByteString]
                        } deriving (Show,Eq)
 
+
+ssh_MSG_KEXINIT :: Word8
+ssh_MSG_KEXINIT  = 20
+
 data SshKeyExchange = SshKeyExchange { sshCookie            :: !SshCookie
                                      , sshKexAlgs           :: [S.ByteString]
                                      , sshServerHostKeyAlgs :: [S.ByteString]
@@ -40,8 +45,17 @@ data SshKeyExchange = SshKeyExchange { sshCookie            :: !SshCookie
                                      } deriving (Show,Eq)
 
 
-ssh_MSG_KEXINIT :: Word8
-ssh_MSG_KEXINIT  = 20
+ssh_MSG_NEWKEYS :: Word8
+ssh_MSG_NEWKEYS  = 21
+
+ssh_MSG_KEXDH_INIT :: Word8
+ssh_MSG_KEXDH_INIT  = 30
+
+data SshKexDhInit = SshKexDhInit { sshE :: Integer
+                                 } deriving (Show,Eq)
+
+ssh_MSG_KEXDH_REPLY :: Word8
+ssh_MSG_KEXDH_REPLY  = 31
 
 
 -- Rendering -------------------------------------------------------------------
@@ -119,6 +133,34 @@ putSshKeyExchange SshKeyExchange { .. } =
                    else 0
      -- RESERVED
      putWord32be 0
+
+
+putMpInt :: Putter Integer
+putMpInt i =
+  do putWord32be len
+     mapM_ putWord8 bytes
+  where
+  (len,bytes) = unpack i
+
+unpack :: Integer -> (Word32, [Word8])
+unpack  = go 1 []
+  where
+  go len bytes n
+    | abs n < 0xff = finalize len bytes n
+    | otherwise    = let byte = fromInteger (n .&. 0xff)
+                         n'   = n `shiftR` 8
+                         len' = len + 1
+                      in go len' (byte : bytes) (byte `seq` len' `seq` n')
+
+  finalize len bytes n
+    | n > 0 && testBit n 7 = (len, 0 : fromInteger n : bytes)
+    | otherwise            = (len,     fromInteger n : bytes)
+
+putSshKexDhInit :: Putter SshKexDhInit
+putSshKexDhInit SshKexDhInit { .. } =
+  do putWord8 ssh_MSG_KEXDH_INIT
+     putMpInt sshE
+
 
 -- Parsing ---------------------------------------------------------------------
 
@@ -223,3 +265,28 @@ getSshKeyExchange  = label "SshKeyExchange" $
      _ <- getWord32be
 
      return SshKeyExchange { .. }
+
+
+getMpInt :: Get Integer
+getMpInt  =
+  do numBytes <- getWord32be
+     isolate (fromIntegral numBytes) $
+       do w <- getWord8
+          let msb | w == 0      = 0
+                  | testBit w 7 = toInteger w - 0x100
+                  | otherwise   = toInteger w
+
+          go msb (numBytes - 1)
+  where
+  go acc 0 =    return acc
+  go acc n = do w <- getWord8
+                let acc' = (acc `shiftL` 8) + fromIntegral w
+                go acc' (acc' `seq` n-1)
+
+getSshKexDhInit :: Get SshKexDhInit
+getSshKexDhInit  = label "SshKexDhInit" $
+  do tag <- getWord8
+     guard (tag == ssh_MSG_KEXDH_INIT)
+
+     sshE <- getMpInt
+     return SshKexDhInit { .. }

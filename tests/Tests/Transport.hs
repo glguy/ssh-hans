@@ -33,6 +33,9 @@ transportTests =
         encodeDecode gen_sshKeyExchange
             (putSshPacket Nothing putSshKeyExchange)
             (fst `fmap` getSshPacket Nothing getSshKeyExchange)
+
+      , testProperty "SshKexDhInit" $
+        encodeDecode genSshKexDhInit putSshKexDhInit getSshKexDhInit
       ]
   ]
 
@@ -110,3 +113,9 @@ gen_sshKeyExchange  =
      let sshLanguages         = SshAlgs [] []
      sshFirstKexFollows <- arbitrary
      return SshKeyExchange { .. }
+
+
+genSshKexDhInit :: Gen SshKexDhInit
+genSshKexDhInit  =
+  do sshE <- arbitrary
+     return SshKexDhInit { .. }
