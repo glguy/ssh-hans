@@ -14,7 +14,7 @@ import           Test.Framework ( Test, testGroup )
 import           Test.Framework.Providers.QuickCheck2 ( testProperty )
 import           Test.QuickCheck
                      ( Gen, Property, forAll, listOf, listOf1, elements
-                     , counterexample, (===), vectorOf, arbitrary )
+                     , counterexample, (===), vectorOf, arbitrary, oneof )
 
 
 transportTests =
@@ -26,16 +26,16 @@ transportTests =
         encodeDecode (S.pack `fmap` listOf1 ascii)
             (putSshPacket Nothing put) (fst `fmap` getSshPacket Nothing get)
 
-      , testProperty "SshKeyExchange" $
-        encodeDecode gen_sshKeyExchange putSshKeyExchange getSshKeyExchange
+      , testProperty "mpint" $
+        encodeDecode arbitrary putMpInt getMpInt
 
-      , testProperty "framed SshKeyExchange" $
-        encodeDecode gen_sshKeyExchange
-            (putSshPacket Nothing putSshKeyExchange)
-            (fst `fmap` getSshPacket Nothing getSshKeyExchange)
+      , testProperty "SshCert" $
+        encodeDecode genSshCert putSshCert getSshCert
 
-      , testProperty "SshKexDhInit" $
-        encodeDecode genSshKexDhInit putSshKexDhInit getSshKexDhInit
+      , encodeDecodePacket "SshKeyExchange" gen_sshKeyExchange putSshKeyExchange getSshKeyExchange
+      , encodeDecodePacket "SshKexDhInit"   genSshKexDhInit    putSshKexDhInit   getSshKexDhInit
+      , encodeDecodePacket "SshKexDhReply"  genSshKexDhReply   putSshKexDhReply  getSshKexDhReply
+      , encodeDecodePacket "SshKexDhReply"  genSshKexDhReply   putSshKexDhReply  getSshKexDhReply
       ]
   ]
 
@@ -44,6 +44,14 @@ encodeDecode gen render parse = forAll gen $ \ a ->
   case runGet parse (runPut (render a)) of
     Right a' -> a === a'
     Left err -> counterexample err False
+
+encodeDecodePacket :: (Show a, Eq a) => String -> Gen a -> Putter a -> Get a -> Test
+encodeDecodePacket name gen render parse =
+  testGroup name
+    [ testProperty "unframed" (encodeDecode gen render parse)
+    , testProperty "framed"   (encodeDecode gen (putSshPacket Nothing render)
+                                                (fst `fmap` getSshPacket Nothing parse))
+    ]
 
 ascii :: Gen Char
 ascii  = elements $ concat [ [ 'a' .. 'z' ]
@@ -119,3 +127,27 @@ genSshKexDhInit :: Gen SshKexDhInit
 genSshKexDhInit  =
   do sshE <- arbitrary
      return SshKexDhInit { .. }
+
+genSshCert :: Gen SshCert
+genSshCert  =
+  oneof [ do p <- arbitrary
+             q <- arbitrary
+             g <- arbitrary
+             y <- arbitrary
+             return (SshDss p q g y)
+
+        , do e <- arbitrary
+             n <- arbitrary
+             return (SshRsa e n)
+
+        , do name  <- listOf1 ascii
+             bytes <- listOf1 arbitrary
+             return (SshOther (S.pack name) (S.pack bytes))
+        ]
+
+genSshKexDhReply :: Gen SshKexDhReply
+genSshKexDhReply  =
+  do sshHostPubKey <- genSshCert
+     sshF          <- arbitrary
+     sshHostSig    <- S.pack `fmap` listOf ascii
+     return SshKexDhReply { .. }

@@ -48,14 +48,30 @@ data SshKeyExchange = SshKeyExchange { sshCookie            :: !SshCookie
 ssh_MSG_NEWKEYS :: Word8
 ssh_MSG_NEWKEYS  = 21
 
+
+data SshCert = SshDss !Integer !Integer !Integer !Integer
+             | SshRsa !Integer !Integer
+             | SshOther !S.ByteString !S.ByteString
+               deriving (Show,Eq)
+
+sshCertName :: SshCert -> S.ByteString
+sshCertName SshDss {}      = "ssh-dss"
+sshCertName SshRsa {}      = "ssh-rsa"
+sshCertName (SshOther n _) = n
+
 ssh_MSG_KEXDH_INIT :: Word8
 ssh_MSG_KEXDH_INIT  = 30
 
-data SshKexDhInit = SshKexDhInit { sshE :: Integer
+data SshKexDhInit = SshKexDhInit { sshE :: !Integer
                                  } deriving (Show,Eq)
 
 ssh_MSG_KEXDH_REPLY :: Word8
 ssh_MSG_KEXDH_REPLY  = 31
+
+data SshKexDhReply = SshKexDhReply { sshHostPubKey :: SshCert
+                                   , sshF          :: !Integer
+                                   , sshHostSig    :: !S.ByteString
+                                   } deriving (Show,Eq)
 
 
 -- Rendering -------------------------------------------------------------------
@@ -143,7 +159,7 @@ putMpInt i =
   (len,bytes) = unpack i
 
 unpack :: Integer -> (Word32, [Word8])
-unpack  = go 1 []
+unpack  = go 0 []
   where
   go len bytes n
     | abs n < 0xff = finalize len bytes n
@@ -153,13 +169,45 @@ unpack  = go 1 []
                       in go len' (byte : bytes) (byte `seq` len' `seq` n')
 
   finalize len bytes n
-    | n > 0 && testBit n 7 = (len, 0 : fromInteger n : bytes)
-    | otherwise            = (len,     fromInteger n : bytes)
+    | n == 0               = (len,                     bytes)
+    | n > 0 && testBit n 7 = (len + 2, 0 : fromInteger n : bytes)
+    | otherwise            = (len + 1,     fromInteger n : bytes)
+
+putString :: Putter S.ByteString
+putString bytes =
+  do putWord32be (fromIntegral (S.length bytes))
+     putByteString bytes
 
 putSshKexDhInit :: Putter SshKexDhInit
 putSshKexDhInit SshKexDhInit { .. } =
   do putWord8 ssh_MSG_KEXDH_INIT
      putMpInt sshE
+
+putSshCert :: Putter SshCert
+
+putSshCert (SshDss p q g y) =
+  do putString "ssh-dss"
+     putMpInt p
+     putMpInt q
+     putMpInt g
+     putMpInt y
+
+putSshCert (SshRsa e n) =
+  do putString "ssh-rsa"
+     putMpInt e
+     putMpInt n
+
+putSshCert (SshOther name bytes) =
+  do putString name
+     putByteString bytes
+
+
+putSshKexDhReply :: Putter SshKexDhReply
+putSshKexDhReply SshKexDhReply { .. } =
+  do putWord8 ssh_MSG_KEXDH_REPLY
+     putString (runPut (putSshCert sshHostPubKey))
+     putMpInt sshF
+     putString sshHostSig
 
 
 -- Parsing ---------------------------------------------------------------------
@@ -236,6 +284,8 @@ getSshPacket mbCbSize getPayload =
      packetLen  <- getWord32be
      paddingLen <- getWord8
 
+     unless (paddingLen >= 4) (fail "Corrupted padding length")
+
      let payloadLen = fromIntegral packetLen - fromIntegral paddingLen - 1
      payload <- isolate payloadLen getPayload
 
@@ -270,18 +320,26 @@ getSshKeyExchange  = label "SshKeyExchange" $
 getMpInt :: Get Integer
 getMpInt  =
   do numBytes <- getWord32be
-     isolate (fromIntegral numBytes) $
-       do w <- getWord8
-          let msb | w == 0      = 0
-                  | testBit w 7 = toInteger w - 0x100
-                  | otherwise   = toInteger w
 
-          go msb (numBytes - 1)
+     if numBytes == 0
+        then return 0
+        else isolate (fromIntegral numBytes) $
+               do w <- getWord8
+                  let msb | w == 0      = 0
+                          | testBit w 7 = toInteger w - 0x100
+                          | otherwise   = toInteger w
+
+                  go msb (numBytes - 1)
   where
   go acc 0 =    return acc
   go acc n = do w <- getWord8
                 let acc' = (acc `shiftL` 8) + fromIntegral w
                 go acc' (acc' `seq` n-1)
+
+getString :: Get S.ByteString
+getString  =
+  do len <- getWord32be
+     getBytes (fromIntegral len)
 
 getSshKexDhInit :: Get SshKexDhInit
 getSshKexDhInit  = label "SshKexDhInit" $
@@ -290,3 +348,34 @@ getSshKexDhInit  = label "SshKexDhInit" $
 
      sshE <- getMpInt
      return SshKexDhInit { .. }
+
+getSshCert :: Get SshCert
+getSshCert  = label "SshCert" $
+  msum [ do "ssh-dss" <- getString
+            p         <- getMpInt
+            q         <- getMpInt
+            g         <- getMpInt
+            y         <- getMpInt
+            return (SshDss p q g y)
+
+       , do "ssh-rsa" <- getString
+            e         <- getMpInt
+            n         <- getMpInt
+            return (SshRsa e n)
+
+       , do name  <- getString
+            bytes <- getBytes =<< remaining
+            return (SshOther name bytes)
+       ]
+
+getSshKexDhReply :: Get SshKexDhReply
+getSshKexDhReply  = label "SshKexDhReply" $
+  do tag <- getWord8
+     guard (tag == ssh_MSG_KEXDH_REPLY)
+
+     pubKeyLen     <- getWord32be
+     sshHostPubKey <- isolate (fromIntegral pubKeyLen) getSshCert
+     sshF          <- getMpInt
+     sshHostSig    <- getString
+
+     return SshKexDhReply { .. }
