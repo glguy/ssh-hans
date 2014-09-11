@@ -48,16 +48,20 @@ data SshKeyExchange = SshKeyExchange { sshCookie            :: !SshCookie
 ssh_MSG_NEWKEYS :: Word8
 ssh_MSG_NEWKEYS  = 21
 
+data SshPubCert = SshPubDss !Integer !Integer !Integer !Integer
+                | SshPubRsa !Integer !Integer
+                | SshPubOther !S.ByteString !S.ByteString
+                  deriving (Show,Eq)
 
-data SshCert = SshDss !Integer !Integer !Integer !Integer
-             | SshRsa !Integer !Integer
-             | SshOther !S.ByteString !S.ByteString
-               deriving (Show,Eq)
+data SshSig = SshSigDss !Integer !Integer
+            | SshSigRsa !S.ByteString
+            | SshSigOther S.ByteString S.ByteString
+              deriving (Show,Eq)
 
-sshCertName :: SshCert -> S.ByteString
-sshCertName SshDss {}      = "ssh-dss"
-sshCertName SshRsa {}      = "ssh-rsa"
-sshCertName (SshOther n _) = n
+sshPubCertName :: SshPubCert -> S.ByteString
+sshPubCertName SshPubDss {}      = "ssh-dss"
+sshPubCertName SshPubRsa {}      = "ssh-rsa"
+sshPubCertName (SshPubOther n _) = n
 
 ssh_MSG_KEXDH_INIT :: Word8
 ssh_MSG_KEXDH_INIT  = 30
@@ -68,10 +72,36 @@ data SshKexDhInit = SshKexDhInit { sshE :: !Integer
 ssh_MSG_KEXDH_REPLY :: Word8
 ssh_MSG_KEXDH_REPLY  = 31
 
-data SshKexDhReply = SshKexDhReply { sshHostPubKey :: SshCert
+data SshKexDhReply = SshKexDhReply { sshHostPubKey :: SshPubCert
                                    , sshF          :: !Integer
-                                   , sshHostSig    :: !S.ByteString
+                                   , sshHostSig    :: SshSig
                                    } deriving (Show,Eq)
+
+
+-- Hash Generation -------------------------------------------------------------
+
+sshDhHash :: SshIdent       -- ^ V_C
+          -> SshIdent       -- ^ V_S
+          -> SshKeyExchange -- ^ I_C
+          -> SshKeyExchange -- ^ I_S
+          -> SshPubCert     -- ^ K_S
+          -> Integer        -- ^ e
+          -> Integer        -- ^ f
+          -> Integer        -- ^ K
+          -> S.ByteString
+sshDhHash v_c v_s i_c i_s k_s e f k = runPut $
+  do putString (putIdent v_c)
+     putString (putIdent v_s)
+     putString (runPut (putSshKeyExchange i_c))
+     putString (runPut (putSshKeyExchange i_s))
+     putString (runPut (putSshPubCert k_s))
+     putMpInt e
+     putMpInt f
+     putMpInt k
+  where
+  -- special version of putSshIdent that drops the CR-LF at the end
+  putIdent v = let bytes = runPut (putSshIdent v)
+                in S.take (S.length bytes - 2) bytes
 
 
 -- Rendering -------------------------------------------------------------------
@@ -173,6 +203,23 @@ unpack  = go 0 []
     | n > 0 && testBit n 7 = (len + 2, 0 : fromInteger n : bytes)
     | otherwise            = (len + 1,     fromInteger n : bytes)
 
+putUnsigned :: Int -> Putter Integer
+putUnsigned size val =
+  do let (padding,bytes) = go [] val
+     mapM_ putWord8 padding
+     mapM_ putWord8 bytes
+  where
+
+  go acc n
+    | n <= 0xff = let res    = reverse (fromInteger n : acc)
+                      len    = length res
+                      padLen = size - len
+                   in (replicate padLen 0, res)
+
+    | otherwise = let acc' = fromInteger (n .&. 0xff) : acc
+                   in go acc' (acc' `seq` (n `shiftR` 8))
+
+
 putString :: Putter S.ByteString
 putString bytes =
   do putWord32be (fromIntegral (S.length bytes))
@@ -183,21 +230,37 @@ putSshKexDhInit SshKexDhInit { .. } =
   do putWord8 ssh_MSG_KEXDH_INIT
      putMpInt sshE
 
-putSshCert :: Putter SshCert
+putSshPubCert :: Putter SshPubCert
 
-putSshCert (SshDss p q g y) =
+putSshPubCert (SshPubDss p q g y) =
   do putString "ssh-dss"
      putMpInt p
      putMpInt q
      putMpInt g
      putMpInt y
 
-putSshCert (SshRsa e n) =
+putSshPubCert (SshPubRsa e n) =
   do putString "ssh-rsa"
      putMpInt e
      putMpInt n
 
-putSshCert (SshOther name bytes) =
+putSshPubCert (SshPubOther name bytes) =
+  do putString name
+     putByteString bytes
+
+
+putSshSig :: Putter SshSig
+
+putSshSig (SshSigDss r s) =
+  do putString "ssh-dss"
+     putUnsigned 20 r
+     putUnsigned 20 s
+
+putSshSig (SshSigRsa s) =
+  do putString "ssh-rsa"
+     putString s
+
+putSshSig (SshSigOther name bytes) =
   do putString name
      putByteString bytes
 
@@ -205,9 +268,9 @@ putSshCert (SshOther name bytes) =
 putSshKexDhReply :: Putter SshKexDhReply
 putSshKexDhReply SshKexDhReply { .. } =
   do putWord8 ssh_MSG_KEXDH_REPLY
-     putString (runPut (putSshCert sshHostPubKey))
+     putString (runPut (putSshPubCert sshHostPubKey))
      putMpInt sshF
-     putString sshHostSig
+     putString (runPut (putSshSig sshHostSig))
 
 
 -- Parsing ---------------------------------------------------------------------
@@ -316,6 +379,15 @@ getSshKeyExchange  = label "SshKeyExchange" $
 
      return SshKeyExchange { .. }
 
+getUnsigned :: Int -> Get Integer
+getUnsigned  = go []
+  where
+  go acc 0 = return $! foldr step 0 acc
+  go acc n = do w <- getWord8
+                let acc' = w : acc
+                go acc' (acc' `seq` n - 1)
+
+  step w acc = acc `shiftL` 8 + toInteger w
 
 getMpInt :: Get Integer
 getMpInt  =
@@ -349,24 +421,43 @@ getSshKexDhInit  = label "SshKexDhInit" $
      sshE <- getMpInt
      return SshKexDhInit { .. }
 
-getSshCert :: Get SshCert
-getSshCert  = label "SshCert" $
-  msum [ do "ssh-dss" <- getString
-            p         <- getMpInt
+getSshPubCert :: Get SshPubCert
+getSshPubCert  = label "SshPubCert" $
+  do name <- getString
+     case name of
+       "ssh-dss" ->
+         do p         <- getMpInt
             q         <- getMpInt
             g         <- getMpInt
             y         <- getMpInt
-            return (SshDss p q g y)
+            return (SshPubDss p q g y)
 
-       , do "ssh-rsa" <- getString
-            e         <- getMpInt
+       "ssh-rsa" ->
+         do e         <- getMpInt
             n         <- getMpInt
-            return (SshRsa e n)
+            return (SshPubRsa e n)
 
-       , do name  <- getString
-            bytes <- getBytes =<< remaining
-            return (SshOther name bytes)
-       ]
+       _ ->
+         do bytes <- getBytes =<< remaining
+            return (SshPubOther name bytes)
+
+getSshSig :: Get SshSig
+getSshSig  = label "SshSig" $
+  do name <- getString
+     case name of
+       "ssh-dss" ->
+         do r <- getUnsigned (160 `div` 8)
+            s <- getUnsigned (160 `div` 8)
+            return (SshSigDss r s)
+
+       "ssh-rsa" ->
+         do s <- getString
+            return (SshSigRsa s)
+
+       _ ->
+         do bytes <- getBytes =<< remaining
+            return (SshSigOther name bytes)
+
 
 getSshKexDhReply :: Get SshKexDhReply
 getSshKexDhReply  = label "SshKexDhReply" $
@@ -374,8 +465,11 @@ getSshKexDhReply  = label "SshKexDhReply" $
      guard (tag == ssh_MSG_KEXDH_REPLY)
 
      pubKeyLen     <- getWord32be
-     sshHostPubKey <- isolate (fromIntegral pubKeyLen) getSshCert
+     sshHostPubKey <- isolate (fromIntegral pubKeyLen) getSshPubCert
+
      sshF          <- getMpInt
-     sshHostSig    <- getString
+
+     sigLen        <- getWord32be
+     sshHostSig    <- isolate (fromIntegral sigLen) getSshSig
 
      return SshKexDhReply { .. }

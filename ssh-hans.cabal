@@ -29,10 +29,15 @@ executable server
     build-depends:     base >= 4.7 && < 5,
                        bytestring,
                        cereal,
+                       directory,
                        network,
                        crypto-api,
                        DRBG,
-                       ssh-hans
+                       ssh-hans,
+                       RSA,
+                       crypto-pubkey-types,
+                       monadcryptorandom,
+                       haskell-tor
     hs-source-dirs:    server
     main-is:           Main.hs
     default-language:  Haskell2010

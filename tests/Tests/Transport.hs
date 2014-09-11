@@ -14,7 +14,8 @@ import           Test.Framework ( Test, testGroup )
 import           Test.Framework.Providers.QuickCheck2 ( testProperty )
 import           Test.QuickCheck
                      ( Gen, Property, forAll, listOf, listOf1, elements
-                     , counterexample, (===), vectorOf, arbitrary, oneof )
+                     , counterexample, (===), vectorOf, arbitrary, oneof
+                     , suchThat )
 
 
 transportTests =
@@ -29,8 +30,11 @@ transportTests =
       , testProperty "mpint" $
         encodeDecode arbitrary putMpInt getMpInt
 
-      , testProperty "SshCert" $
-        encodeDecode genSshCert putSshCert getSshCert
+      , testProperty "SshPubCert" $
+        encodeDecode genSshPubCert putSshPubCert getSshPubCert
+
+      , testProperty "SshSig" $
+        encodeDecode genSshSig putSshSig getSshSig
 
       , encodeDecodePacket "SshKeyExchange" gen_sshKeyExchange putSshKeyExchange getSshKeyExchange
       , encodeDecodePacket "SshKexDhInit"   genSshKexDhInit    putSshKexDhInit   getSshKexDhInit
@@ -128,26 +132,40 @@ genSshKexDhInit  =
   do sshE <- arbitrary
      return SshKexDhInit { .. }
 
-genSshCert :: Gen SshCert
-genSshCert  =
+genSshPubCert :: Gen SshPubCert
+genSshPubCert  =
   oneof [ do p <- arbitrary
              q <- arbitrary
              g <- arbitrary
              y <- arbitrary
-             return (SshDss p q g y)
+             return (SshPubDss p q g y)
 
         , do e <- arbitrary
              n <- arbitrary
-             return (SshRsa e n)
+             return (SshPubRsa e n)
 
         , do name  <- listOf1 ascii
              bytes <- listOf1 arbitrary
-             return (SshOther (S.pack name) (S.pack bytes))
+             return (SshPubOther (S.pack name) (S.pack bytes))
+        ]
+
+genSshSig :: Gen SshSig
+genSshSig  =
+  oneof [ do r <- arbitrary `suchThat` (>= 0)
+             s <- arbitrary `suchThat` (>= 0)
+             return (SshSigDss r s)
+
+        , do s <- listOf1 arbitrary
+             return (SshSigRsa (S.pack s))
+
+        , do name  <- listOf1 ascii
+             bytes <- listOf1 arbitrary
+             return (SshSigOther (S.pack name) (S.pack bytes))
         ]
 
 genSshKexDhReply :: Gen SshKexDhReply
 genSshKexDhReply  =
-  do sshHostPubKey <- genSshCert
+  do sshHostPubKey <- genSshPubCert
      sshF          <- arbitrary
-     sshHostSig    <- S.pack `fmap` listOf ascii
+     sshHostSig    <- genSshSig
      return SshKexDhReply { .. }
