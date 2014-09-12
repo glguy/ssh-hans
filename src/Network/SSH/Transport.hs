@@ -26,6 +26,8 @@ data SshIdent = SshIdent { sshProtoVersion
 newtype SshCookie = SshCookie S.ByteString
                     deriving (Show,Eq)
 
+newtype SshSessionId = SshSessionId S.ByteString
+
 data SshAlgs = SshAlgs { sshClientToServer :: [S.ByteString]
                        , sshServerToClient :: [S.ByteString]
                        } deriving (Show,Eq)
@@ -47,6 +49,9 @@ data SshKeyExchange = SshKeyExchange { sshCookie            :: !SshCookie
 
 ssh_MSG_NEWKEYS :: Word8
 ssh_MSG_NEWKEYS  = 21
+
+data SshNewKeys = SshNewKeys
+                  deriving (Show,Eq)
 
 data SshPubCert = SshPubDss !Integer !Integer !Integer !Integer
                 | SshPubRsa !Integer !Integer
@@ -273,6 +278,11 @@ putSshKexDhReply SshKexDhReply { .. } =
      putString (runPut (putSshSig sshHostSig))
 
 
+putSshNewKeys :: Putter SshNewKeys
+putSshNewKeys _ =
+     putWord8 ssh_MSG_NEWKEYS
+
+
 -- Parsing ---------------------------------------------------------------------
 
 getCrLf :: Get ()
@@ -473,3 +483,11 @@ getSshKexDhReply  = label "SshKexDhReply" $
      sshHostSig    <- isolate (fromIntegral sigLen) getSshSig
 
      return SshKexDhReply { .. }
+
+
+getSshNewKeys :: Get SshNewKeys
+getSshNewKeys  =
+  do tag <- getWord8
+     guard (tag == ssh_MSG_NEWKEYS)
+
+     return SshNewKeys

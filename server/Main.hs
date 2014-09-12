@@ -3,6 +3,7 @@
 
 module Main where
 
+import           Network.SSH.Keys
 import           Network.SSH.Transport
 
 import           Control.Concurrent ( forkIO )
@@ -128,18 +129,26 @@ startDh client gen priv @ PrivateKey { .. } pub @ PublicKey { .. } mkHash =
                 cert           = SshPubRsa public_e public_n
                 hash           = mkHash cert sshE f k
                 h              = hashFunction hashSHA1 (L.fromStrict hash)
+                h'             = L.toStrict h
+
                 sig            = rsassa_pkcs1_v1_5_sign hashSHA1 priv h
+
+                session_id     = SshSessionId h'
+                keys           = genKeys (hashFunction hashSHA1) k h' session_id
+
             S.hPutStr client $ runPut
                              $ putSshPacket Nothing putSshKexDhReply
                              $ SshKexDhReply { sshHostPubKey = cert
                                              , sshF          = f
                                              , sshHostSig    = SshSigRsa (L.toStrict sig) }
 
-            getDhResponse client gen' priv pub
+            getDhResponse client gen' priv pub session_id keys
 
        Left err -> print err
 
 
-getDhResponse client gen priv pub =
-  do msg <- parseFrom client (getSshPacket Nothing (getBytes =<< remaining))
-     print msg
+getDhResponse client gen priv pub session_id keys =
+  do msg <- parseFrom client (getSshPacket Nothing getSshNewKeys)
+     case msg of
+       Right {} -> S.hPutStr client (runPut (putSshPacket Nothing putSshNewKeys SshNewKeys))
+       Left err -> print err

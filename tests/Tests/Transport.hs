@@ -5,7 +5,7 @@ module Tests.Transport where
 
 import Network.SSH.Transport
 
-import           Control.Applicative ( (<$>), (<*>) )
+import           Control.Applicative ( (<$>), (<*>), pure )
 import qualified Data.ByteString.Char8 as S
 import           Data.Serialize
                      ( Get, Putter, runGet, runPut, getByteString
@@ -40,6 +40,7 @@ transportTests =
       , encodeDecodePacket "SshKexDhInit"   genSshKexDhInit    putSshKexDhInit   getSshKexDhInit
       , encodeDecodePacket "SshKexDhReply"  genSshKexDhReply   putSshKexDhReply  getSshKexDhReply
       , encodeDecodePacket "SshKexDhReply"  genSshKexDhReply   putSshKexDhReply  getSshKexDhReply
+      , encodeDecodePacket "SshNewKeys"     (pure SshNewKeys)  putSshNewKeys     getSshNewKeys
       ]
   ]
 
