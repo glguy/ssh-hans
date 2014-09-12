@@ -3,10 +3,12 @@
 
 module Tests.Transport where
 
+import Network.SSH.Ciphers
 import Network.SSH.Transport
 
 import           Control.Applicative ( (<$>), (<*>), pure )
 import qualified Data.ByteString.Char8 as S
+import qualified Data.ByteString.Lazy as L
 import           Data.Serialize
                      ( Get, Putter, runGet, runPut, getByteString
                      , putByteString, get, put )
@@ -23,10 +25,6 @@ transportTests =
       [ testProperty "SshIdent" $
         encodeDecode gen_sshIdent putSshIdent getSshIdent
 
-      , testProperty "SshPacket" $
-        encodeDecode (S.pack `fmap` listOf1 ascii)
-            (putSshPacket Nothing put) (fst `fmap` getSshPacket Nothing get)
-
       , testProperty "mpint" $
         encodeDecode arbitrary putMpInt getMpInt
 
@@ -36,11 +34,12 @@ transportTests =
       , testProperty "SshSig" $
         encodeDecode genSshSig putSshSig getSshSig
 
-      , encodeDecodePacket "SshKeyExchange" gen_sshKeyExchange putSshKeyExchange getSshKeyExchange
-      , encodeDecodePacket "SshKexDhInit"   genSshKexDhInit    putSshKexDhInit   getSshKexDhInit
-      , encodeDecodePacket "SshKexDhReply"  genSshKexDhReply   putSshKexDhReply  getSshKexDhReply
-      , encodeDecodePacket "SshKexDhReply"  genSshKexDhReply   putSshKexDhReply  getSshKexDhReply
-      , encodeDecodePacket "SshNewKeys"     (pure SshNewKeys)  putSshNewKeys     getSshNewKeys
+      , encodeDecodePacket "SshKeyExchange"    gen_sshKeyExchange   putSshKeyExchange    getSshKeyExchange
+      , encodeDecodePacket "SshKexDhInit"      genSshKexDhInit      putSshKexDhInit      getSshKexDhInit
+      , encodeDecodePacket "SshKexDhReply"     genSshKexDhReply     putSshKexDhReply     getSshKexDhReply
+      , encodeDecodePacket "SshKexDhReply"     genSshKexDhReply     putSshKexDhReply     getSshKexDhReply
+      , encodeDecodePacket "SshNewKeys"        (pure SshNewKeys)    putSshNewKeys        getSshNewKeys
+      , encodeDecodePacket "SshServiceRequest" genSshServiceRequest putSshServiceRequest getSshServiceRequest
       ]
   ]
 
@@ -54,8 +53,18 @@ encodeDecodePacket :: (Show a, Eq a) => String -> Gen a -> Putter a -> Get a -> 
 encodeDecodePacket name gen render parse =
   testGroup name
     [ testProperty "unframed" (encodeDecode gen render parse)
-    , testProperty "framed"   (encodeDecode gen (putSshPacket Nothing render)
-                                                (fst `fmap` getSshPacket Nothing parse))
+
+    , testProperty "framed (no encryption)" $ forAll gen $ \ a ->
+      case runGet (getSshPacket cipher_none parse) (fst (putSshPacket cipher_none render a)) of
+        Right (a',_,_) -> a === a'
+        Left err       -> counterexample err False
+
+    , testProperty "framed (aes128-cbc)" $
+      forAll genKey $ \ (enc,dec) ->
+      forAll gen    $ \ a         ->
+      case runGet (getSshPacket dec parse) (fst (putSshPacket enc render a)) of
+        Right (a',_,_) -> a === a'
+        Left err       -> counterexample err False
     ]
 
 ascii :: Gen Char
@@ -170,3 +179,17 @@ genSshKexDhReply  =
      sshF          <- arbitrary
      sshHostSig    <- genSshSig
      return SshKexDhReply { .. }
+
+
+genSshServiceRequest :: Gen SshServiceRequest
+genSshServiceRequest  =
+  do sshServiceName <- S.pack `fmap` listOf ascii
+     return SshServiceRequest { .. }
+
+
+-- | Generate an aes128-cbc cipher pair.
+genKey :: Gen (Cipher,Cipher)
+genKey  =
+  do k  <- L.pack `fmap` vectorOf 16 arbitrary
+     iv <- L.pack `fmap` vectorOf 16 arbitrary
+     return (cipher_aes128_cbc k iv)

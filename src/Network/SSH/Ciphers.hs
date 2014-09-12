@@ -4,13 +4,17 @@
 module Network.SSH.Ciphers (
     Cipher()
   , cipherName
+  , blockSize
   , encrypt
   , decrypt
+
+  , cipher_none
+  , cipher_aes128_cbc
   ) where
 
 import           Crypto.Cipher.AES128 ( AESKey128, AESKey192, AESKey256 )
 import           Crypto.Classes.Exceptions
-                     ( cbc, blockSizeBytes, keyLengthBytes, buildKey )
+                     ( cbc, unCbc, blockSizeBytes, keyLengthBytes, buildKey )
 import           Crypto.Types ( IV(..) )
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Char8 as S8
@@ -27,6 +31,9 @@ data Cipher = Cipher { cName      :: !S.ByteString
 
 instance Show Cipher where
   show Cipher { .. } = S8.unpack cName
+
+blockSize :: Cipher -> Int
+blockSize Cipher { .. } = cBlockSize
 
 encrypt :: Cipher -> S.ByteString -> (S.ByteString,Cipher)
 encrypt Cipher { .. } = cEncrypt
@@ -46,8 +53,8 @@ cipher_none  =
 
 cipher_aes128_cbc :: L.ByteString -- ^ IV
                   -> L.ByteString -- ^ Key
-                  -> Cipher
-cipher_aes128_cbc initial_iv key = cipher
+                  -> (Cipher,Cipher)
+cipher_aes128_cbc initial_iv key = (enc_cipher, dec_cipher)
   where
 
   aesKey :: AESKey128
@@ -57,11 +64,22 @@ cipher_aes128_cbc initial_iv key = cipher
   iv0     = IV (L.toStrict (L.take (fromIntegral ivSize) initial_iv))
   ivSize  = witness blockSizeBytes aesKey
 
-  cipher = Cipher { cName      = "aes128-cbc"
-                  , cBlockSize = ivSize
-                  , cEncrypt   = enc iv0
-                  }
+  enc_cipher =
+    Cipher { cName      = "aes128-cbc"
+           , cBlockSize = ivSize
+           , cEncrypt   = enc iv0
+           }
 
-  enc iv bytes = (cipherText, cipher { cEncrypt = enc iv' })
+  enc iv bytes = (cipherText, enc_cipher { cEncrypt = enc iv' })
     where
     (cipherText,iv') = cbc aesKey iv bytes
+
+  dec_cipher =
+    Cipher { cName      = "aes128-cbc"
+           , cBlockSize = ivSize
+           , cEncrypt   = dec iv0
+           }
+
+  dec iv cipherText = (bytes, enc_cipher { cEncrypt = dec iv' })
+    where
+    (bytes,iv') = unCbc aesKey iv cipherText

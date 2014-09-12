@@ -3,6 +3,8 @@
 
 module Network.SSH.Transport where
 
+import           Network.SSH.Ciphers
+
 import           Control.Monad ( guard, msum, unless )
 import           Data.Bits ( shiftR, shiftL, (.&.), testBit )
 import qualified Data.ByteString as S
@@ -11,7 +13,7 @@ import           Data.List ( intersperse, genericLength )
 import           Data.Serialize
                      ( Get, Putter, getWord8, putWord8, putByteString, label
                      , putWord32be, getWord32be, isolate, getBytes, remaining
-                     , lookAhead, skip, runPut )
+                     , lookAhead, skip, runPut, runGet )
 import           Data.Word ( Word8, Word32 )
 
 import Debug.Trace
@@ -82,6 +84,12 @@ data SshKexDhReply = SshKexDhReply { sshHostPubKey :: SshPubCert
                                    , sshHostSig    :: SshSig
                                    } deriving (Show,Eq)
 
+ssh_MSG_SERVICE_REQUEST :: Word8
+ssh_MSG_SERVICE_REQUEST  = 5
+
+data SshServiceRequest = SshServiceRequest { sshServiceName :: !S.ByteString
+                                           } deriving (Show,Eq)
+
 
 -- Hash Generation -------------------------------------------------------------
 
@@ -141,9 +149,9 @@ putSshAlgs SshAlgs { .. } =
 
 -- | Given a way to render something, turn it into an ssh packet.
 --
--- XXX this needs to take into account the block algorithm, and potential mac.
-putSshPacket :: Maybe Int -> Putter a -> Putter a
-putSshPacket mbCbSize render a =
+-- XXX this needs to append a mac.
+putSshPacket :: Cipher -> Putter a -> a -> (S.ByteString,Cipher)
+putSshPacket cipher render a = encrypt cipher $ runPut $
   do putWord32be (fromIntegral (1 + bytesLen + paddingLen))
      putWord8 (fromIntegral paddingLen)
      putByteString bytes
@@ -152,9 +160,7 @@ putSshPacket mbCbSize render a =
   bytes    = runPut (render a)
   bytesLen = S.length bytes
 
-  align = case mbCbSize of
-            Just cbSize -> max cbSize 8
-            otherwise   -> 8
+  align = max (blockSize cipher) 8
 
   bytesRem   = (4 + 1 + bytesLen) `mod` align
 
@@ -283,6 +289,12 @@ putSshNewKeys _ =
      putWord8 ssh_MSG_NEWKEYS
 
 
+putSshServiceRequest :: Putter SshServiceRequest
+putSshServiceRequest SshServiceRequest { .. } =
+  do putWord8 ssh_MSG_SERVICE_REQUEST
+     putString sshServiceName
+
+
 -- Parsing ---------------------------------------------------------------------
 
 getCrLf :: Get ()
@@ -350,23 +362,43 @@ getSshAlgs  =
 
 -- | Given a way to parse the payload of an ssh packet, do the required
 -- book-keeping surrounding the data.
-getSshPacket :: Maybe Int -> Get a -> Get (a,S.ByteString)
-getSshPacket mbCbSize getPayload =
-  do -- XXX verify that packetLen is reasonable.  The rfc requires that
-     -- it be able to handle at least 35000.
-     packetLen  <- getWord32be
-     paddingLen <- getWord8
+getSshPacket :: Cipher -> Get a -> Get (a,S.ByteString,Cipher)
+getSshPacket cipher getPayload = label "SshPacket" $
+  do let blockLen = max (blockSize cipher) 8
+     ((packetLen,paddingLen),_) <- lookAhead $ decryptGet blockLen $
+       do packetLen  <- getWord32be
+          paddingLen <- getWord8
 
-     unless (paddingLen >= 4) (fail "Corrupted padding length")
+          unless (paddingLen >= 4) (fail "Corrupted padding length")
 
-     let payloadLen = fromIntegral packetLen - fromIntegral paddingLen - 1
-     payload <- isolate payloadLen getPayload
+          return (fromIntegral packetLen, fromIntegral paddingLen)
 
-     skip (fromIntegral paddingLen)
+     -- decrypt and decode the packet
+     (payload,cipher') <- label "decrypt payload" $ decryptGet (packetLen + 4) $
+       do skip 5 -- skip the packet len and payload len, parsed above already
 
+          let payloadLen = packetLen - paddingLen - 1
+          payload <- label "payload" (isolate payloadLen getPayload)
+
+          -- drop the padding bytes
+          skip paddingLen
+
+          return payload
+
+     -- the mac is appended to the encrypted payload
+     -- XXX have this use the negotiated mac to figure out the mac size
      mac <- getBytes =<< remaining
 
-     return (payload, mac)
+     return (payload, mac, cipher')
+
+  where
+
+  decryptGet len m =
+    do encBytes <- getBytes len
+       let (bytes,cipher') = decrypt cipher encBytes
+       case runGet m bytes of
+         Right a  -> return (a,cipher')
+         Left err -> fail err
 
 getSshKeyExchange :: Get SshKeyExchange
 getSshKeyExchange  = label "SshKeyExchange" $
@@ -491,3 +523,12 @@ getSshNewKeys  =
      guard (tag == ssh_MSG_NEWKEYS)
 
      return SshNewKeys
+
+
+getSshServiceRequest :: Get SshServiceRequest
+getSshServiceRequest  =
+  do tag <- getWord8
+     guard (tag == ssh_MSG_SERVICE_REQUEST)
+
+     sshServiceName <- getString
+     return SshServiceRequest { .. }

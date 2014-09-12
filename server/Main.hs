@@ -3,6 +3,7 @@
 
 module Main where
 
+import           Network.SSH.Ciphers
 import           Network.SSH.Keys
 import           Network.SSH.Transport
 
@@ -110,19 +111,23 @@ newCookie g = (SshCookie bytes, g')
 startKex gen priv pub mkHash client =
   do let (cookie,gen') = newCookie gen
          i_s           = supportedKex cookie
-     S.hPutStr client (runPut (putSshPacket Nothing putSshKeyExchange i_s))
+     S.hPutStr client (fst (putSshPacket cipher_none putSshKeyExchange i_s))
 
-     msg <- parseFrom client (getSshPacket Nothing getSshKeyExchange)
+     msg <- parseFrom client (getSshPacket cipher_none getSshKeyExchange)
      case msg of
-       Right (i_c,_mac) -> do print i_c
-                              startDh client gen priv pub (mkHash i_c i_s)
-       Left err  ->    print err
+
+       Right (i_c,_mac,_) ->
+         do print i_c
+            startDh client gen priv pub (mkHash i_c i_s)
+
+       Left err ->
+            print err
 
 startDh client gen priv @ PrivateKey { .. } pub @ PublicKey { .. } mkHash =
-  do msg <- parseFrom client (getSshPacket Nothing getSshKexDhInit)
+  do msg <- parseFrom client (getSshPacket cipher_none getSshKexDhInit)
      case msg of
 
-       Right (SshKexDhInit { .. }, _) ->
+       Right (SshKexDhInit { .. }, _, _) ->
          do let Right (y,gen') = crandomR (1,private_q) gen
                 f              = modular_exponentiation (dhgG oakley2) y (dhgP oakley2)
                 k              = modular_exponentiation sshE y (dhgP oakley2)
@@ -136,8 +141,8 @@ startDh client gen priv @ PrivateKey { .. } pub @ PublicKey { .. } mkHash =
                 session_id     = SshSessionId h'
                 keys           = genKeys (hashFunction hashSHA1) k h' session_id
 
-            S.hPutStr client $ runPut
-                             $ putSshPacket Nothing putSshKexDhReply
+            S.hPutStr client $ fst
+                             $ putSshPacket cipher_none putSshKexDhReply
                              $ SshKexDhReply { sshHostPubKey = cert
                                              , sshF          = f
                                              , sshHostSig    = SshSigRsa (L.toStrict sig) }
@@ -148,7 +153,7 @@ startDh client gen priv @ PrivateKey { .. } pub @ PublicKey { .. } mkHash =
 
 
 getDhResponse client gen priv pub session_id keys =
-  do msg <- parseFrom client (getSshPacket Nothing getSshNewKeys)
+  do msg <- parseFrom client (getSshPacket cipher_none getSshNewKeys)
      case msg of
-       Right {} -> S.hPutStr client (runPut (putSshPacket Nothing putSshNewKeys SshNewKeys))
+       Right {} -> S.hPutStr client (fst (putSshPacket cipher_none putSshNewKeys SshNewKeys))
        Left err -> print err
