@@ -41,6 +41,7 @@ transportTests =
       , encodeDecodePacket "SshKexDhReply"     genSshKexDhReply     putSshKexDhReply     getSshKexDhReply
       , encodeDecodePacket "SshNewKeys"        (pure SshNewKeys)    putSshNewKeys        getSshNewKeys
       , encodeDecodePacket "SshServiceRequest" genSshServiceRequest putSshServiceRequest getSshServiceRequest
+      , encodeDecodePacket "SshServiceAccept"  genSshServiceAccept  putSshServiceAccept  getSshServiceAccept
       ]
   ]
 
@@ -193,10 +194,19 @@ genSshKexDhReply  =
      return SshKexDhReply { .. }
 
 
+genSshService :: Gen SshService
+genSshService  =
+  oneof [    pure SshUserAuth
+        ,    pure SshConnection
+        , do name <- listOf ascii
+             pure (SshServiceOther (S.pack name))
+        ]
+
 genSshServiceRequest :: Gen SshServiceRequest
-genSshServiceRequest  =
-  do sshServiceName <- S.pack `fmap` listOf ascii
-     return SshServiceRequest { .. }
+genSshServiceRequest  = SshServiceRequest `fmap` genSshService
+
+genSshServiceAccept :: Gen SshServiceAccept
+genSshServiceAccept  = SshServiceAccept `fmap` genSshService
 
 
 -- | Generate an aes128-cbc cipher pair.

@@ -204,5 +204,16 @@ getDhResponse client gen priv pub session_id state keys =
 
      transitionKeys keys state
 
-     SshServiceRequest { .. } <- receive client state getSshServiceRequest
-     print sshServiceName
+     req <- receive client state getSshServiceRequest
+     case req of
+
+       SshServiceRequest SshUserAuth ->
+         do send client state (putSshServiceAccept (SshServiceAccept SshUserAuth))
+
+
+       _ ->
+            send client state $ putSshDisconnect SshDisconnect
+               { sshReasonCode  = 7
+               , sshDescription = ""
+               , sshLanguageTag = "english"
+               }

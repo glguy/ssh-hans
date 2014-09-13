@@ -55,6 +55,14 @@ ssh_MSG_NEWKEYS  = 21
 data SshNewKeys = SshNewKeys
                   deriving (Show,Eq)
 
+data SshDisconnect = SshDisconnect { sshReasonCode  :: !Word32
+                                   , sshDescription :: !S.ByteString
+                                   , sshLanguageTag :: !S.ByteString
+                                   } deriving (Show,Eq)
+
+ssh_MSG_DISCONNECT :: Word8
+ssh_MSG_DISCONNECT  = 1
+
 data SshPubCert = SshPubDss !Integer !Integer !Integer !Integer
                 | SshPubRsa !Integer !Integer
                 | SshPubOther !S.ByteString !S.ByteString
@@ -84,11 +92,23 @@ data SshKexDhReply = SshKexDhReply { sshHostPubKey :: SshPubCert
                                    , sshHostSig    :: SshSig
                                    } deriving (Show,Eq)
 
+
+data SshService = SshUserAuth
+                | SshConnection
+                | SshServiceOther !S.ByteString
+                  deriving (Show,Eq)
+
 ssh_MSG_SERVICE_REQUEST :: Word8
 ssh_MSG_SERVICE_REQUEST  = 5
 
-data SshServiceRequest = SshServiceRequest { sshServiceName :: !S.ByteString
-                                           } deriving (Show,Eq)
+data SshServiceRequest = SshServiceRequest SshService
+                         deriving (Show,Eq)
+
+ssh_MSG_SERVICE_ACCEPT :: Word8
+ssh_MSG_SERVICE_ACCEPT  = 6
+
+data SshServiceAccept = SshServiceAccept SshService
+                         deriving (Show,Eq)
 
 
 -- Packet State ----------------------------------------------------------------
@@ -303,10 +323,29 @@ putSshNewKeys _ =
      putWord8 ssh_MSG_NEWKEYS
 
 
+putSshDisconnect :: Putter SshDisconnect
+putSshDisconnect SshDisconnect { .. } =
+  do putWord8 ssh_MSG_DISCONNECT
+
+     putWord32be sshReasonCode
+     putString   sshDescription
+     putString   sshLanguageTag
+
+
+putSshService :: Putter SshService
+putSshService SshUserAuth            = putString "ssh-userauth"
+putSshService SshConnection          = putString "ssh-connection"
+putSshService (SshServiceOther name) = putString name
+
 putSshServiceRequest :: Putter SshServiceRequest
-putSshServiceRequest SshServiceRequest { .. } =
+putSshServiceRequest (SshServiceRequest svc) =
   do putWord8 ssh_MSG_SERVICE_REQUEST
-     putString sshServiceName
+     putSshService svc
+
+putSshServiceAccept :: Putter SshServiceAccept
+putSshServiceAccept (SshServiceAccept svc) =
+  do putWord8 ssh_MSG_SERVICE_ACCEPT
+     putSshService svc
 
 
 -- Parsing ---------------------------------------------------------------------
@@ -541,11 +580,34 @@ getSshNewKeys  =
 
      return SshNewKeys
 
+getSshService :: Get SshService
+getSshService  =
+  do service <- getString
+     case service of
+       "ssh-userauth"   -> return SshUserAuth
+       "ssh-connection" -> return SshConnection
+       _                -> return (SshServiceOther service)
 
 getSshServiceRequest :: Get SshServiceRequest
 getSshServiceRequest  =
   do tag <- getWord8
      guard (tag == ssh_MSG_SERVICE_REQUEST)
+     SshServiceRequest `fmap` getSshService
 
-     sshServiceName <- getString
-     return SshServiceRequest { .. }
+
+getSshServiceAccept :: Get SshServiceAccept
+getSshServiceAccept  =
+  do tag <- getWord8
+     guard (tag == ssh_MSG_SERVICE_ACCEPT)
+     SshServiceAccept `fmap` getSshService
+
+
+getSshDisconnect :: Get SshDisconnect
+getSshDisconnect  =
+  do tag <- getWord8
+     guard (tag == ssh_MSG_DISCONNECT)
+
+     sshReasonCode  <- getWord32be
+     sshDescription <- getString
+     sshLanguageTag <- getString
+     return SshDisconnect { .. }
