@@ -209,6 +209,8 @@ getDhResponse client gen priv pub session_id state keys =
 
        SshServiceRequest SshUserAuth ->
          do send client state (putSshServiceAccept (SshServiceAccept SshUserAuth))
+            req <- receive client state (getBytes =<< remaining)
+            print req
 
 
        _ ->
