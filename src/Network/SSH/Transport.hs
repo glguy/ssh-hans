@@ -4,19 +4,19 @@
 module Network.SSH.Transport where
 
 import           Network.SSH.Ciphers
+import           Network.SSH.Mac
 
 import           Control.Monad ( guard, msum, unless )
 import           Data.Bits ( shiftR, shiftL, (.&.), testBit )
 import qualified Data.ByteString as S
+import qualified Data.ByteString.Lazy as L
 import           Data.Char ( chr, ord )
 import           Data.List ( intersperse, genericLength )
 import           Data.Serialize
-                     ( Get, Putter, getWord8, putWord8, putByteString, label
-                     , putWord32be, getWord32be, isolate, getBytes, remaining
-                     , lookAhead, skip, runPut, runGet )
+                     ( Get, Put, Putter, getWord8, putWord8, putByteString
+                     , label , putWord32be, getWord32be, isolate, getBytes
+                     , remaining , lookAhead, skip, runPut, runGet )
 import           Data.Word ( Word8, Word32 )
-
-import Debug.Trace
 
 
 data SshIdent = SshIdent { sshProtoVersion
@@ -91,6 +91,13 @@ data SshServiceRequest = SshServiceRequest { sshServiceName :: !S.ByteString
                                            } deriving (Show,Eq)
 
 
+-- Packet State ----------------------------------------------------------------
+
+data SshPacketState = SshPacketState { sshCipher     :: Cipher
+                                     , sshMac        :: Mac
+                                     } deriving (Show)
+
+
 -- Hash Generation -------------------------------------------------------------
 
 sshDhHash :: SshIdent       -- ^ V_C
@@ -150,14 +157,21 @@ putSshAlgs SshAlgs { .. } =
 -- | Given a way to render something, turn it into an ssh packet.
 --
 -- XXX this needs to append a mac.
-putSshPacket :: Cipher -> Putter a -> a -> (S.ByteString,Cipher)
-putSshPacket cipher render a = encrypt cipher $ runPut $
-  do putWord32be (fromIntegral (1 + bytesLen + paddingLen))
-     putWord8 (fromIntegral paddingLen)
-     putByteString bytes
-     putByteString padding
+putSshPacket :: Cipher -> Mac -> Put -> (L.ByteString,Cipher,Mac)
+putSshPacket cipher mac render = (packet,cipher',mac')
   where
-  bytes    = runPut (render a)
+  packet = L.fromChunks [ encBody, sig ]
+
+  (encBody,cipher') = encrypt cipher body
+  (sig,mac')        = sign mac body
+
+  body = runPut $
+    do putWord32be (fromIntegral (1 + bytesLen + paddingLen))
+       putWord8 (fromIntegral paddingLen)
+       putByteString bytes
+       putByteString padding
+
+  bytes    = runPut render
   bytesLen = S.length bytes
 
   align = max (blockSize cipher) 8
@@ -362,8 +376,8 @@ getSshAlgs  =
 
 -- | Given a way to parse the payload of an ssh packet, do the required
 -- book-keeping surrounding the data.
-getSshPacket :: Cipher -> Get a -> Get (a,S.ByteString,Cipher)
-getSshPacket cipher getPayload = label "SshPacket" $
+getSshPacket :: Cipher -> Mac -> Get a -> Get (a,Cipher,Mac)
+getSshPacket cipher mac getPayload = label "SshPacket" $
   do let blockLen = max (blockSize cipher) 8
      ((packetLen,paddingLen),_) <- lookAhead $ decryptGet blockLen $
        do packetLen  <- getWord32be
@@ -374,22 +388,21 @@ getSshPacket cipher getPayload = label "SshPacket" $
           return (fromIntegral packetLen, fromIntegral paddingLen)
 
      -- decrypt and decode the packet
-     (payload,cipher') <- label "decrypt payload" $ decryptGet (packetLen + 4) $
-       do skip 5 -- skip the packet len and payload len, parsed above already
+     ((payload,sig',mac'),cipher') <- decryptGet (packetLen + 4) $
+       do (sig',mac') <- lookAhead (genSig (packetLen + 4))
+
+          skip 5 -- skip the packet len and payload len, parsed above already
 
           let payloadLen = packetLen - paddingLen - 1
           payload <- label "payload" (isolate payloadLen getPayload)
+          label "padding" (getBytes paddingLen)
 
-          -- drop the padding bytes
-          skip paddingLen
+          return (payload,sig',mac')
 
-          return payload
+     sig <- getBytes =<< remaining
+     unless (sig == sig') (fail "Signature validation failed")
 
-     -- the mac is appended to the encrypted payload
-     -- XXX have this use the negotiated mac to figure out the mac size
-     mac <- getBytes =<< remaining
-
-     return (payload, mac, cipher')
+     return (payload, cipher', mac')
 
   where
 
@@ -399,6 +412,10 @@ getSshPacket cipher getPayload = label "SshPacket" $
        case runGet m bytes of
          Right a  -> return (a,cipher')
          Left err -> fail err
+
+  genSig payloadLen =
+    do payload <- getBytes payloadLen
+       return (sign mac payload)
 
 getSshKeyExchange :: Get SshKeyExchange
 getSshKeyExchange  = label "SshKeyExchange" $

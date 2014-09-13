@@ -5,6 +5,7 @@ module Main where
 
 import           Network.SSH.Ciphers
 import           Network.SSH.Keys
+import           Network.SSH.Mac
 import           Network.SSH.Transport
 
 import           Control.Concurrent ( forkIO )
@@ -20,12 +21,45 @@ import           Codec.Crypto.RSA.Exceptions
                      , HashInfo(..) )
 import qualified Data.ByteString.Char8 as S
 import qualified Data.ByteString.Lazy as L
-import           Data.Serialize ( Get, Put, runPut, runGet, runGetPartial, Result(..), getBytes, remaining )
+import           Data.IORef
+                     ( IORef, newIORef, readIORef, writeIORef, modifyIORef )
+import           Data.Serialize
+                     ( Get, Put, runPut, runGet, runGetPartial, Result(..)
+                     , getBytes, remaining )
 import           System.Directory ( doesFileExist )
 import           System.IO ( Handle, hClose )
 import           TLS.DiffieHellman ( DiffieHellmanGroup(..), oakley2 )
 import           Network ( PortID(..), withSocketsDo, listenOn, accept )
 
+
+data SshState = SshState { sshDecC  :: !(IORef Cipher) -- ^ Client decryption context
+                         , sshEncS  :: !(IORef Cipher) -- ^ Server encryption context
+                         , sshAuthC :: !(IORef Mac)    -- ^ Client authentication context
+                         , sshAuthS :: !(IORef Mac)    -- ^ Server authentication context
+                         }
+
+initialState =
+  do sshDecC  <- newIORef cipher_none
+     sshEncS  <- newIORef cipher_none
+     sshAuthC <- newIORef mac_none
+     sshAuthS <- newIORef mac_none
+     return SshState { .. }
+
+
+-- | Install new keys (and algorithms) into the SshState.
+transitionKeys Keys { .. } SshState { .. } =
+  do writeIORef sshDecC (snd (cipher_aes128_cbc (kpClientToServer kInitialIV) (kpClientToServer kEncKey)))
+     writeIORef sshEncS (fst (cipher_aes128_cbc (kpServerToClient kInitialIV) (kpServerToClient kEncKey)))
+
+     modifyIORef sshAuthC $ \ mac ->
+       let mac' = mac_hmac_sha1 (kpClientToServer kIntegKey)
+        in mac `switch` mac'
+
+     modifyIORef sshAuthS $ \ mac ->
+       let mac' = mac_hmac_sha1 (kpServerToClient kIntegKey)
+        in mac `switch` mac'
+
+     putStrLn "New keys installed."
 
 main = withSocketsDo $
   do gen  <- newGenIO
@@ -72,6 +106,29 @@ parseFrom handle body = go True (Partial (runGetPartial body))
   go _     (Fail s _)  = return (Left s)
 
 
+send :: Handle -> SshState -> Put -> IO ()
+send client SshState { .. } body =
+  do cipher <- readIORef sshEncS
+     mac    <- readIORef sshAuthS
+     let (pkt,cipher',mac') = putSshPacket cipher mac body
+     L.hPutStr client pkt
+     writeIORef sshEncS  cipher'
+     writeIORef sshAuthS mac'
+
+
+receive :: Handle -> SshState -> Get a -> IO a
+receive client SshState { .. } body =
+  do cipher <- readIORef sshDecC
+     mac    <- readIORef sshAuthC
+     res    <- parseFrom client (getSshPacket cipher mac body)
+     case res of
+       Right (a,cipher',mac') -> do writeIORef sshDecC  cipher'
+                                    writeIORef sshAuthC mac'
+                                    return a
+       Left err               -> do putStrLn err
+                                    fail "Failed when reading from client"
+
+
 greeting :: SshIdent
 greeting  = SshIdent { sshProtoVersion    = "2.0"
                      , sshSoftwareVersion = "SSH_HaNS_1.0"
@@ -87,7 +144,8 @@ sayHello gen priv pub client =
      print msg
      case msg of
        Right v_c -> do print v_c
-                       startKex gen priv pub (sshDhHash v_c greeting) client
+                       state <- initialState
+                       startKex gen priv pub (sshDhHash v_c greeting) state client
        Left err    -> return ()
 
 
@@ -95,7 +153,7 @@ supportedKex :: SshCookie -> SshKeyExchange
 supportedKex sshCookie =
   SshKeyExchange { sshKexAlgs           = [ "diffie-hellman-group1-sha1" ]
                  , sshServerHostKeyAlgs = [ "ssh-rsa" ]
-                 , sshEncAlgs           = SshAlgs [ "3des-cbc" ] [ "3des-cbc" ]
+                 , sshEncAlgs           = SshAlgs [ "aes128-cbc" ] [ "aes128-cbc" ]
                  , sshMacAlgs           = SshAlgs [ "hmac-sha1" ] [ "hmac-sha1" ]
                  , sshCompAlgs          = SshAlgs [ "none" ] [ "none" ]
                  , sshLanguages         = SshAlgs [] []
@@ -108,52 +166,43 @@ newCookie g = (SshCookie bytes, g')
   where
   (bytes,g') = genBytes 16 g
 
-startKex gen priv pub mkHash client =
-  do let (cookie,gen') = newCookie gen
-         i_s           = supportedKex cookie
-     S.hPutStr client (fst (putSshPacket cipher_none putSshKeyExchange i_s))
+startKex gen priv pub mkHash state client =
+  do let (cookie,gen')  = newCookie gen
+         i_s            = supportedKex cookie
 
-     msg <- parseFrom client (getSshPacket cipher_none getSshKeyExchange)
-     case msg of
+     send client state (putSshKeyExchange i_s)
 
-       Right (i_c,_mac,_) ->
-         do print i_c
-            startDh client gen priv pub (mkHash i_c i_s)
+     i_c <- receive client state getSshKeyExchange
+     print i_c
+     startDh client gen priv pub state (mkHash i_c i_s)
 
-       Left err ->
-            print err
+startDh client gen priv @ PrivateKey { .. } pub @ PublicKey { .. } state mkHash =
+  do SshKexDhInit { .. } <- receive client state getSshKexDhInit
+     let Right (y,gen') = crandomR (1,private_q) gen
+         f              = modular_exponentiation (dhgG oakley2) y (dhgP oakley2)
+         k              = modular_exponentiation sshE y (dhgP oakley2)
+         cert           = SshPubRsa public_e public_n
+         hash           = mkHash cert sshE f k
+         h              = hashFunction hashSHA1 (L.fromStrict hash)
+         h'             = L.toStrict h
 
-startDh client gen priv @ PrivateKey { .. } pub @ PublicKey { .. } mkHash =
-  do msg <- parseFrom client (getSshPacket cipher_none getSshKexDhInit)
-     case msg of
+         sig            = rsassa_pkcs1_v1_5_sign hashSHA1 priv h
 
-       Right (SshKexDhInit { .. }, _, _) ->
-         do let Right (y,gen') = crandomR (1,private_q) gen
-                f              = modular_exponentiation (dhgG oakley2) y (dhgP oakley2)
-                k              = modular_exponentiation sshE y (dhgP oakley2)
-                cert           = SshPubRsa public_e public_n
-                hash           = mkHash cert sshE f k
-                h              = hashFunction hashSHA1 (L.fromStrict hash)
-                h'             = L.toStrict h
+         session_id     = SshSessionId h'
+         keys           = genKeys (hashFunction hashSHA1) k h' session_id
 
-                sig            = rsassa_pkcs1_v1_5_sign hashSHA1 priv h
+     send client state $ putSshKexDhReply
+                       $ SshKexDhReply { sshHostPubKey = cert
+                                       , sshF          = f
+                                       , sshHostSig    = SshSigRsa (L.toStrict sig) }
 
-                session_id     = SshSessionId h'
-                keys           = genKeys (hashFunction hashSHA1) k h' session_id
+     getDhResponse client gen' priv pub session_id state keys
 
-            S.hPutStr client $ fst
-                             $ putSshPacket cipher_none putSshKexDhReply
-                             $ SshKexDhReply { sshHostPubKey = cert
-                                             , sshF          = f
-                                             , sshHostSig    = SshSigRsa (L.toStrict sig) }
+getDhResponse client gen priv pub session_id state keys =
+  do SshNewKeys <- receive client state getSshNewKeys
+     send client state (putSshNewKeys SshNewKeys)
 
-            getDhResponse client gen' priv pub session_id keys
+     transitionKeys keys state
 
-       Left err -> print err
-
-
-getDhResponse client gen priv pub session_id keys =
-  do msg <- parseFrom client (getSshPacket cipher_none getSshNewKeys)
-     case msg of
-       Right {} -> S.hPutStr client (fst (putSshPacket cipher_none putSshNewKeys SshNewKeys))
-       Left err -> print err
+     SshServiceRequest { .. } <- receive client state getSshServiceRequest
+     print sshServiceName

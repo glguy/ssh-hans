@@ -4,6 +4,7 @@
 module Tests.Transport where
 
 import Network.SSH.Ciphers
+import Network.SSH.Mac
 import Network.SSH.Transport
 
 import           Control.Applicative ( (<$>), (<*>), pure )
@@ -55,16 +56,27 @@ encodeDecodePacket name gen render parse =
     [ testProperty "unframed" (encodeDecode gen render parse)
 
     , testProperty "framed (no encryption)" $ forAll gen $ \ a ->
-      case runGet (getSshPacket cipher_none parse) (fst (putSshPacket cipher_none render a)) of
-        Right (a',_,_) -> a === a'
-        Left err       -> counterexample err False
+      let (pkt,_,_) = putSshPacket cipher_none mac_none (render a)
+       in case runGet (getSshPacket cipher_none mac_none parse) (L.toStrict pkt) of
+            Right (a',_,_) -> a === a'
+            Left err       -> counterexample err False
 
     , testProperty "framed (aes128-cbc)" $
-      forAll genKey $ \ (enc,dec) ->
-      forAll gen    $ \ a         ->
-      case runGet (getSshPacket dec parse) (fst (putSshPacket enc render a)) of
-        Right (a',_,_) -> a === a'
-        Left err       -> counterexample err False
+      forAll genCipher $ \ (enc,dec) ->
+      forAll gen       $ \ a         ->
+      let (pkt,_,_) = putSshPacket enc mac_none (render a)
+       in case runGet (getSshPacket dec mac_none parse) (L.toStrict pkt) of
+            Right (a',_,_) -> a === a'
+            Left err       -> counterexample err False
+
+    , testProperty "framed (aes128-cbc,hmac-sha1)" $
+      forAll genCipher $ \ (enc,dec) ->
+      forAll genMac    $ \ mac       ->
+      forAll gen       $ \ a         ->
+      let (pkt,_,_) = putSshPacket enc mac (render a)
+       in case runGet (getSshPacket dec mac parse) (L.toStrict pkt) of
+            Right (a',_,_) -> a === a'
+            Left err       -> counterexample err False
     ]
 
 ascii :: Gen Char
@@ -188,8 +200,13 @@ genSshServiceRequest  =
 
 
 -- | Generate an aes128-cbc cipher pair.
-genKey :: Gen (Cipher,Cipher)
-genKey  =
+genCipher :: Gen (Cipher,Cipher)
+genCipher  =
   do k  <- L.pack `fmap` vectorOf 16 arbitrary
      iv <- L.pack `fmap` vectorOf 16 arbitrary
      return (cipher_aes128_cbc k iv)
+
+genMac :: Gen Mac
+genMac  =
+  do k <- L.pack `fmap` vectorOf 32 arbitrary
+     return (mac_hmac_sha1 k)
