@@ -184,7 +184,8 @@ startKex gen priv pub mkHash state client =
      send client state (SshMsgKexInit i_s)
 
      SshMsgKexInit i_c <- receive client state
-     print i_c
+     putStrLn "Got KexInit"
+
      startDh client gen priv pub state (mkHash i_c i_s)
 
 startDh client gen priv @ PrivateKey { .. } pub @ PublicKey { .. } state mkHash =
@@ -202,12 +203,9 @@ startDh client gen priv @ PrivateKey { .. } pub @ PublicKey { .. } state mkHash 
          session_id     = SshSessionId h'
          keys           = genKeys (hashFunction hashSHA1) k h' session_id
 
-         msg            = SshMsgKexDhReply cert f (SshSigRsa (L.toStrict sig))
-
-     print msg
 
      putStrLn "Sending DH reply"
-     send client state msg
+     send client state (SshMsgKexDhReply cert f (SshSigRsa (L.toStrict sig)))
 
      putStrLn "Waiting for response"
      getDhResponse client gen' priv pub session_id state keys
@@ -225,7 +223,6 @@ getDhResponse client gen priv pub session_id state keys =
          do send client state (SshMsgServiceAccept SshUserAuth)
             req <- receive client state
             print req
-
 
        _ ->
             send client state (SshMsgDisconnect SshDiscServiceNotAvailable "" "en-us")
