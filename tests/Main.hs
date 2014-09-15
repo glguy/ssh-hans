@@ -1,6 +1,8 @@
 module Main where
 
-import Tests.Transport
+import Tests.Messages
+import Tests.Packet
+-- import Tests.Protocol
 
 import Test.Framework ( testGroup )
 import Test.Framework.Runners.Console ( defaultMain )
@@ -8,5 +10,7 @@ import Test.Framework.Runners.Console ( defaultMain )
 
 main :: IO ()
 main  = defaultMain
-  [ testGroup "transport" transportTests
+  [ testGroup "Messages" messageTests
+  , testGroup "Packet"   packetTests
+  --, testGroup "Protocol" protocolTests
   ]

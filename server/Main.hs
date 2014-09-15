@@ -6,7 +6,8 @@ module Main where
 import           Network.SSH.Ciphers
 import           Network.SSH.Keys
 import           Network.SSH.Mac
-import           Network.SSH.Transport
+import           Network.SSH.Messages
+import           Network.SSH.Packet
 
 import           Control.Concurrent ( forkIO )
 import qualified Control.Exception as X
@@ -99,34 +100,46 @@ parseFrom :: Handle -> Get a -> IO (Either String a)
 parseFrom handle body = go True (Partial (runGetPartial body))
   where
   go True  (Partial k) = do bytes <- S.hGetSome handle 1024
-                            go (S.length bytes == 1024) (k bytes)
+                            if S.null bytes
+                               then fail "Client closed connection"
+                               else go (S.length bytes == 1024) (k bytes)
 
   go False (Partial k) = go False (k S.empty)
   go _     (Done a _)  = return (Right a)
   go _     (Fail s _)  = return (Left s)
 
 
-send :: Handle -> SshState -> Put -> IO ()
-send client SshState { .. } body =
+send :: Handle -> SshState -> SshMsg -> IO ()
+send client SshState { .. } msg =
   do cipher <- readIORef sshEncS
      mac    <- readIORef sshAuthS
-     let (pkt,cipher',mac') = putSshPacket cipher mac body
+     let (pkt,cipher',mac') = putSshPacket cipher mac (putSshMsg msg)
      L.hPutStr client pkt
      writeIORef sshEncS  cipher'
      writeIORef sshAuthS mac'
 
 
-receive :: Handle -> SshState -> Get a -> IO a
-receive client SshState { .. } body =
-  do cipher <- readIORef sshDecC
-     mac    <- readIORef sshAuthC
-     res    <- parseFrom client (getSshPacket cipher mac body)
-     case res of
-       Right (a,cipher',mac') -> do writeIORef sshDecC  cipher'
-                                    writeIORef sshAuthC mac'
-                                    return a
-       Left err               -> do putStrLn err
-                                    fail "Failed when reading from client"
+receive :: Handle -> SshState -> IO SshMsg
+receive client SshState { .. } = loop
+  where
+  loop =
+    do cipher <- readIORef sshDecC
+       mac    <- readIORef sshAuthC
+       res    <- parseFrom client (getSshPacket cipher mac getSshMsg)
+       case res of
+
+         Right (msg, cipher', mac') ->
+           do writeIORef sshDecC  cipher'
+              writeIORef sshAuthC mac'
+              case msg of
+                SshMsgIgnore _                      -> loop
+                SshMsgDebug display m _ | display   -> S.putStrLn m >> loop
+                                        | otherwise -> loop
+                _                                   -> return msg
+
+         Left err ->
+           do putStrLn err
+              fail "Failed when reading from client"
 
 
 greeting :: SshIdent
@@ -134,8 +147,6 @@ greeting  = SshIdent { sshProtoVersion    = "2.0"
                      , sshSoftwareVersion = "SSH_HaNS_1.0"
                      , sshComments        = ""
                      }
-
-type PartialHash = Put
 
 sayHello :: CtrDRBG -> PrivateKey -> PublicKey -> Handle -> IO ()
 sayHello gen priv pub client =
@@ -149,17 +160,17 @@ sayHello gen priv pub client =
        Left err    -> return ()
 
 
-supportedKex :: SshCookie -> SshKeyExchange
+supportedKex :: SshCookie -> SshKex
 supportedKex sshCookie =
-  SshKeyExchange { sshKexAlgs           = [ "diffie-hellman-group1-sha1" ]
-                 , sshServerHostKeyAlgs = [ "ssh-rsa" ]
-                 , sshEncAlgs           = SshAlgs [ "aes128-cbc" ] [ "aes128-cbc" ]
-                 , sshMacAlgs           = SshAlgs [ "hmac-sha1" ] [ "hmac-sha1" ]
-                 , sshCompAlgs          = SshAlgs [ "none" ] [ "none" ]
-                 , sshLanguages         = SshAlgs [] []
-                 , sshFirstKexFollows   = False
-                 , ..
-                 }
+  SshKex { sshKexAlgs           = [ "diffie-hellman-group1-sha1" ]
+         , sshServerHostKeyAlgs = [ "ssh-rsa" ]
+         , sshEncAlgs           = SshAlgs [ "aes128-cbc" ] [ "aes128-cbc" ]
+         , sshMacAlgs           = SshAlgs [ "hmac-sha1" ] [ "hmac-sha1" ]
+         , sshCompAlgs          = SshAlgs [ "none" ] [ "none" ]
+         , sshLanguages         = SshAlgs [] []
+         , sshFirstKexFollows   = False
+         , ..
+         }
 
 newCookie :: CtrDRBG -> (SshCookie,CtrDRBG)
 newCookie g = (SshCookie bytes, g')
@@ -170,19 +181,19 @@ startKex gen priv pub mkHash state client =
   do let (cookie,gen')  = newCookie gen
          i_s            = supportedKex cookie
 
-     send client state (putSshKeyExchange i_s)
+     send client state (SshMsgKexInit i_s)
 
-     i_c <- receive client state getSshKeyExchange
+     SshMsgKexInit i_c <- receive client state
      print i_c
      startDh client gen priv pub state (mkHash i_c i_s)
 
 startDh client gen priv @ PrivateKey { .. } pub @ PublicKey { .. } state mkHash =
-  do SshKexDhInit { .. } <- receive client state getSshKexDhInit
+  do SshMsgKexDhInit e <- receive client state
      let Right (y,gen') = crandomR (1,private_q) gen
          f              = modular_exponentiation (dhgG oakley2) y (dhgP oakley2)
-         k              = modular_exponentiation sshE y (dhgP oakley2)
+         k              = modular_exponentiation e y (dhgP oakley2)
          cert           = SshPubRsa public_e public_n
-         hash           = mkHash cert sshE f k
+         hash           = mkHash cert e f k
          h              = hashFunction hashSHA1 (L.fromStrict hash)
          h'             = L.toStrict h
 
@@ -191,31 +202,30 @@ startDh client gen priv @ PrivateKey { .. } pub @ PublicKey { .. } state mkHash 
          session_id     = SshSessionId h'
          keys           = genKeys (hashFunction hashSHA1) k h' session_id
 
-     send client state $ putSshKexDhReply
-                       $ SshKexDhReply { sshHostPubKey = cert
-                                       , sshF          = f
-                                       , sshHostSig    = SshSigRsa (L.toStrict sig) }
+         msg            = SshMsgKexDhReply cert f (SshSigRsa (L.toStrict sig))
 
+     print msg
+
+     putStrLn "Sending DH reply"
+     send client state msg
+
+     putStrLn "Waiting for response"
      getDhResponse client gen' priv pub session_id state keys
 
 getDhResponse client gen priv pub session_id state keys =
-  do SshNewKeys <- receive client state getSshNewKeys
-     send client state (putSshNewKeys SshNewKeys)
+  do SshMsgNewKeys <- receive client state
+     send client state SshMsgNewKeys
 
      transitionKeys keys state
 
-     req <- receive client state getSshServiceRequest
+     req <- receive client state
      case req of
 
-       SshServiceRequest SshUserAuth ->
-         do send client state (putSshServiceAccept (SshServiceAccept SshUserAuth))
-            req <- receive client state (getBytes =<< remaining)
+       SshMsgServiceRequest SshUserAuth ->
+         do send client state (SshMsgServiceAccept SshUserAuth)
+            req <- receive client state
             print req
 
 
        _ ->
-            send client state $ putSshDisconnect SshDisconnect
-               { sshReasonCode  = 7
-               , sshDescription = ""
-               , sshLanguageTag = "english"
-               }
+            send client state (SshMsgDisconnect SshDiscServiceNotAvailable "" "en-us")

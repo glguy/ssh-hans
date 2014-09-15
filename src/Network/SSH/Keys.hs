@@ -2,7 +2,8 @@
 
 module Network.SSH.Keys where
 
-import           Network.SSH.Transport ( SshSessionId(..), putMpInt )
+import           Network.SSH.Messages ( SshSessionId(..) )
+import           Network.SSH.Protocol ( putMpInt )
 
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Lazy as L

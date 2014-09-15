@@ -14,10 +14,12 @@ cabal-version:       >=1.10
 
 library
   exposed-modules:     Network.SSH.Server
-                       Network.SSH.Transport
                        Network.SSH.Keys
                        Network.SSH.Ciphers
                        Network.SSH.Mac
+                       Network.SSH.Messages
+                       Network.SSH.Protocol
+                       Network.SSH.Packet
   build-depends:       base >=4.7 && <4.8,
                        cereal >= 0.4.0.1,
                        bytestring,
@@ -28,6 +30,7 @@ library
                        cryptohash-cryptoapi
   hs-source-dirs:      src
   default-language:    Haskell2010
+  ghc-options:         -Wall
 
 executable server
   if os(halvm)
@@ -52,6 +55,7 @@ executable server
 test-suite tests
   type:                exitcode-stdio-1.0
   main-is:             Main.hs
+  other-modules:       Tests.Messages
   hs-source-dirs:      tests
   build-depends:       base >= 4.7 && < 5,
                        bytestring,
@@ -60,5 +64,7 @@ test-suite tests
                        test-framework-quickcheck2,
                        QuickCheck,
                        ssh-hans
+
+  ghc-options:         -Wall
 
   default-language:  Haskell2010
