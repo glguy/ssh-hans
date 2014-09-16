@@ -183,10 +183,15 @@ startKex gen priv pub mkHash state client =
 
      send client state (SshMsgKexInit i_s)
 
-     SshMsgKexInit i_c <- receive client state
+     i_c <- waitForClientKex
      putStrLn "Got KexInit"
-
      startDh client gen priv pub state (mkHash i_c i_s)
+  where
+  waitForClientKex =
+    do msg <- receive client state
+       case msg of
+         SshMsgKexInit i_c -> return i_c
+         _                 -> waitForClientKex
 
 startDh client gen priv @ PrivateKey { .. } pub @ PublicKey { .. } state mkHash =
   do SshMsgKexDhInit e <- receive client state
