@@ -45,13 +45,7 @@ executable server
                        cereal,
                        directory,
                        network,
-                       crypto-api,
-                       DRBG,
-                       ssh-hans,
-                       RSA,
-                       crypto-pubkey-types,
-                       monadcryptorandom,
-                       haskell-tor
+                       ssh-hans
     hs-source-dirs:    server
     main-is:           Main.hs
     default-language:  Haskell2010

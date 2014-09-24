@@ -4,10 +4,6 @@ module Main where
 
 import           Network.SSH.Server
 
-import           Codec.Crypto.RSA.Exceptions ( generateKeyPair, generatePQ )
-import           Crypto.Classes.Exceptions ( newGenIO )
-import           Crypto.Random.DRBG ( CtrDRBG )
-import           Crypto.Types.PubKey.RSA ( PublicKey(..), PrivateKey(..) )
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Lazy as L
 import           Network
@@ -35,9 +31,7 @@ mkClient (h,_,_) = Client { .. }
 
 loadKeys :: IO (PrivateKey, PublicKey)
 loadKeys  =
-  do gen <- newGenIO
-
-     privExists <- doesFileExist "server.priv"
+  do privExists <- doesFileExist "server.priv"
      pubExists  <- doesFileExist "server.pub"
 
      if privExists && pubExists
@@ -45,9 +39,4 @@ loadKeys  =
                 pub  <- readFile "server.pub"
                 return (read priv, read pub) -- icky
 
-        else do let (pub,priv,_) = generateKeyPair (gen :: CtrDRBG) 1024
-                    (p,q,_)      = generatePQ gen (1024 `div` 8)
-                    priv'        = priv { private_p = p, private_q = q }
-                writeFile "server.priv" (show priv')
-                writeFile "server.pub"  (show pub)
-                return (priv', pub)
+        else genKeyPair

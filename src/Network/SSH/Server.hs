@@ -2,9 +2,15 @@
 {-# LANGUAGE RecordWildCards #-}
 
 module Network.SSH.Server (
+
     Server(..)
   , Client(..)
   , sshServer
+
+  , PrivateKey()
+  , PublicKey()
+  , genKeyPair
+
   ) where
 
 import           Network.SSH.Ciphers
@@ -21,7 +27,7 @@ import           Crypto.Random.DRBG ( CtrDRBG )
 import           Crypto.Types.PubKey.RSA ( PublicKey(..), PrivateKey(..) )
 import           Codec.Crypto.RSA.Exceptions
                      ( modular_exponentiation, rsassa_pkcs1_v1_5_sign, hashSHA1
-                     , HashInfo(..) )
+                     , HashInfo(..), generateKeyPair, generatePQ )
 import qualified Data.ByteString.Char8 as S
 import qualified Data.ByteString.Lazy as L
 import           Data.IORef
@@ -49,6 +55,17 @@ sshServer privKey pubKey sock = loop =<< newGenIO
               _ <- forkIO $ sayHello gClient privKey pubKey client
                                 `X.finally` cClose client
               loop g'
+
+-- | Generates a 1024-bit RSA key pair.
+genKeyPair :: IO (PrivateKey, PublicKey)
+genKeyPair  =
+  do gen <- newGenIO
+     let (pub,priv,_) = generateKeyPair (gen :: CtrDRBG) 1024
+         (p,q,_)      = generatePQ gen (1024 `div` 8)
+         priv'        = priv { private_p = p, private_q = q }
+     writeFile "server.priv" (show priv')
+     writeFile "server.pub"  (show pub)
+     return (priv', pub)
 
 
 -- Server Internals ------------------------------------------------------------
