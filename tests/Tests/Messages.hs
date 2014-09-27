@@ -7,14 +7,11 @@ import Network.SSH.Ciphers
 import Network.SSH.Mac
 import Network.SSH.Messages
 import Network.SSH.Packet
-import Network.SSH.Protocol
 
 import           Control.Applicative ( (<$>), (<*>), pure )
 import qualified Data.ByteString.Char8 as S
 import qualified Data.ByteString.Lazy as L
-import           Data.Serialize
-                     ( Get, Putter, runGet, runPut, getByteString
-                     , putByteString, get, put )
+import           Data.Serialize ( Get, Putter, runGet, runPut )
 import           Test.Framework ( Test, testGroup )
 import           Test.Framework.Providers.QuickCheck2 ( testProperty )
 import           Test.QuickCheck
@@ -23,7 +20,8 @@ import           Test.QuickCheck
                      , suchThat )
 
 
-messageTests =
+messageTests :: [Test]
+messageTests  =
   [ testGroup "encode/decode"
       [ testProperty "SshIdent" $
         encodeDecode gen_sshIdent putSshIdent getSshIdent

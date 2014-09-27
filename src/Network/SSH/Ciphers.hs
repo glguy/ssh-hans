@@ -20,7 +20,6 @@ import qualified Data.ByteString as S
 import qualified Data.ByteString.Char8 as S8
 import qualified Data.ByteString.Lazy as L
 import           Data.Tagged ( witness )
-import           TLS.CipherSuite
 
 
 -- | A streaming cipher.
@@ -31,6 +30,9 @@ data Cipher = Cipher { cName      :: !S.ByteString
 
 instance Show Cipher where
   show Cipher { .. } = S8.unpack cName
+
+cipherName :: Cipher -> S.ByteString
+cipherName Cipher { .. } = cName
 
 blockSize :: Cipher -> Int
 blockSize Cipher { .. } = cBlockSize

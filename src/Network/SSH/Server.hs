@@ -34,7 +34,6 @@ import           Data.IORef
                      ( IORef, newIORef, readIORef, writeIORef, modifyIORef )
 import           Data.Serialize
                      ( Get, runGetPartial, Result(..), runPutLazy )
-import           TLS.DiffieHellman ( DiffieHellmanGroup(..), oakley2 )
 
 
 -- Public API ------------------------------------------------------------------
@@ -204,6 +203,22 @@ startKex gen priv pub mkHash state client =
        case msg of
          SshMsgKexInit i_c -> return i_c
          _                 -> waitForClientKex
+
+
+data DiffieHellmanGroup = DiffieHellmanGroup {
+       dhgP    :: Integer -- ^The prime.
+     , dhgG    :: Integer -- ^The generator.
+     , dhgSize :: Int     -- ^Size in bits.
+     }
+ deriving (Eq, Show)
+
+-- |Group 2 from RFC 2409
+oakley2 :: DiffieHellmanGroup
+oakley2 = DiffieHellmanGroup {
+    dhgP = 0xFFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE65381FFFFFFFFFFFFFFFF
+  , dhgG = 2
+  , dhgSize = 1024
+  }
 
 startDh :: Client -> CtrDRBG -> PrivateKey -> PublicKey -> SshState
         -> (SshPubCert -> Integer -> Integer -> Integer -> S.ByteString)

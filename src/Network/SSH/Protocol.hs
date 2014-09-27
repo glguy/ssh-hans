@@ -13,11 +13,9 @@ import qualified Data.ByteString as S
 import           Data.Char ( ord )
 import           Data.List ( intersperse )
 import           Data.Serialize
-                     ( Putter, Get, label, isolate, getBytes, putByteString
+                     ( Putter, Get, isolate, getBytes, putByteString
                      , getWord8, putWord8, putWord32be, getWord32be )
 import           Data.Word ( Word8, Word32 )
-
-import Debug.Trace
 
 
 -- Rendering -------------------------------------------------------------------
