@@ -36,6 +36,7 @@ library
   ghc-options:         -Wall
 
 executable server
+  main-is:             Main.hs
   if os(halvm)
     buildable:         False
   else
@@ -46,7 +47,6 @@ executable server
                        network,
                        ssh-hans
     hs-source-dirs:    server
-    main-is:           Main.hs
     default-language:  Haskell2010
     ghc-options:       -Wall
 
