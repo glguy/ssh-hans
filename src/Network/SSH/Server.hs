@@ -41,9 +41,10 @@ import           Data.Serialize
 data Server = Server { sAccept :: IO Client
                      }
 
-data Client = Client { cGet   :: Int -> IO S.ByteString
-                     , cPut   :: L.ByteString -> IO ()
-                     , cClose :: IO ()
+data Client = Client { cGet         :: Int -> IO S.ByteString
+                     , cPut         :: L.ByteString -> IO ()
+                     , cClose       :: IO ()
+                     , cAuthHandler :: L.ByteString -> SshAuthMethod -> IO Bool
                      }
 
 sshServer :: PrivateKey -> PublicKey -> Server -> IO ()
@@ -73,6 +74,8 @@ data SshState = SshState { sshDecC  :: !(IORef Cipher) -- ^ Client decryption co
                          , sshEncS  :: !(IORef Cipher) -- ^ Server encryption context
                          , sshAuthC :: !(IORef Mac)    -- ^ Client authentication context
                          , sshAuthS :: !(IORef Mac)    -- ^ Server authentication context
+                         , sshBuf   :: !(IORef S.ByteString)
+                           -- ^ Receive buffer
                          }
 
 initialState :: IO SshState
@@ -81,6 +84,7 @@ initialState  =
      sshEncS  <- newIORef cipher_none
      sshAuthC <- newIORef mac_none
      sshAuthS <- newIORef mac_none
+     sshBuf   <- newIORef S.empty
      return SshState { .. }
 
 
@@ -103,16 +107,24 @@ transitionKeys Keys { .. } SshState { .. } =
 
 
 
-parseFrom :: Client -> Get a -> IO (Either String a)
-parseFrom handle body = go True (Partial (runGetPartial body))
+parseFrom :: Client -> IORef S.ByteString -> Get a -> IO (Either String a)
+parseFrom handle buffer body =
+  do bytes <- readIORef buffer
+
+     if S.null bytes
+        then go True (Partial (runGetPartial body))
+        else go True (runGetPartial body bytes)
+
   where
+
   go True  (Partial k) = do bytes <- cGet handle 1024
                             if S.null bytes
                                then fail "Client closed connection"
                                else go (S.length bytes == 1024) (k bytes)
 
   go False (Partial k) = go False (k S.empty)
-  go _     (Done a _)  = return (Right a)
+  go _     (Done a bs) = do writeIORef buffer bs
+                            return (Right a)
   go _     (Fail s _)  = return (Left s)
 
 
@@ -132,7 +144,7 @@ receive client SshState { .. } = loop
   loop =
     do cipher <- readIORef sshDecC
        mac    <- readIORef sshAuthC
-       res    <- parseFrom client (getSshPacket cipher mac getSshMsg)
+       res    <- parseFrom client sshBuf (getSshPacket cipher mac getSshMsg)
        case res of
 
          Right (msg, cipher', mac') ->
@@ -158,11 +170,11 @@ greeting  = SshIdent { sshProtoVersion    = "2.0"
 sayHello :: CtrDRBG -> PrivateKey -> PublicKey -> Client -> IO ()
 sayHello gen priv pub client =
   do cPut client (runPutLazy (putSshIdent greeting))
-     msg <- parseFrom client getSshIdent
+     state <- initialState
+     msg   <- parseFrom client (sshBuf state) getSshIdent
      print msg
      case msg of
        Right v_c -> do print v_c
-                       state <- initialState
                        startKex gen priv pub (sshDhHash v_c greeting) state client
        Left err  -> do print err
                        return ()
@@ -253,13 +265,21 @@ getDhResponse client _gen _priv _pub _session_id state keys =
 
      transitionKeys keys state
 
+     let notAvailable = send client state
+                      $ SshMsgDisconnect SshDiscServiceNotAvailable "" "en-us"
+
      req <- receive client state
      case req of
 
        SshMsgServiceRequest SshUserAuth ->
          do send client state (SshMsgServiceAccept SshUserAuth)
             userReq <- receive client state
-            print userReq
+            case userReq of
 
-       _ ->
-            send client state (SshMsgDisconnect SshDiscServiceNotAvailable "" "en-us")
+              SshMsgUserAuthRequest user svc method ->
+                do _ <- cAuthHandler client (L.fromStrict user) method
+                   return ()
+
+              _ -> notAvailable
+
+       _ -> notAvailable

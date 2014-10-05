@@ -29,6 +29,9 @@ mkClient (h,_,_) = Client { .. }
   cPut   = L.hPutStr  h
   cClose =   hClose   h
 
+  cAuthHandler = \ user m -> do print (user,m)
+                                return False
+
 loadKeys :: IO (PrivateKey, PublicKey)
 loadKeys  =
   do privExists <- doesFileExist "server.priv"
