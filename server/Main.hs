@@ -1,7 +1,9 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 
 module Main where
 
+import           Network.SSH.Packet ( SshIdent(..) )
 import           Network.SSH.Server
 
 import qualified Data.ByteString as S
@@ -17,7 +19,13 @@ main :: IO ()
 main  = withSocketsDo $
   do sock             <- listenOn (PortNumber 2200)
      (privKey,pubKey) <- loadKeys
-     sshServer privKey pubKey (mkServer sock)
+     sshServer greeting privKey pubKey (mkServer sock)
+
+greeting :: SshIdent
+greeting  = SshIdent { sshProtoVersion    = "2.0"
+                     , sshSoftwareVersion = "SSH_HaLVM_2.0"
+                     , sshComments        = ""
+                     }
 
 mkServer :: Socket -> Server
 mkServer sock = Server { sAccept = mkClient `fmap` accept sock }

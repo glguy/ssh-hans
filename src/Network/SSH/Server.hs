@@ -47,12 +47,12 @@ data Client = Client { cGet         :: Int -> IO S.ByteString
                      , cAuthHandler :: L.ByteString -> SshAuthMethod -> IO Bool
                      }
 
-sshServer :: PrivateKey -> PublicKey -> Server -> IO ()
-sshServer privKey pubKey sock = loop =<< newGenIO
+sshServer :: SshIdent -> PrivateKey -> PublicKey -> Server -> IO ()
+sshServer ident privKey pubKey sock = loop =<< newGenIO
   where
   loop g = do client <- sAccept sock
               let (g',gClient) = splitGen g
-              _ <- forkIO $ sayHello gClient privKey pubKey client
+              _ <- forkIO $ sayHello ident gClient privKey pubKey client
                                 `X.finally` cClose client
               loop g'
 
@@ -160,22 +160,15 @@ receive client SshState { .. } = loop
            do putStrLn err
               fail "Failed when reading from client"
 
-
-greeting :: SshIdent
-greeting  = SshIdent { sshProtoVersion    = "2.0"
-                     , sshSoftwareVersion = "SSH_HaNS_1.0"
-                     , sshComments        = ""
-                     }
-
-sayHello :: CtrDRBG -> PrivateKey -> PublicKey -> Client -> IO ()
-sayHello gen priv pub client =
-  do cPut client (runPutLazy (putSshIdent greeting))
+sayHello :: SshIdent -> CtrDRBG -> PrivateKey -> PublicKey -> Client -> IO ()
+sayHello ident gen priv pub client =
+  do cPut client (runPutLazy (putSshIdent ident))
      state <- initialState
      msg   <- parseFrom client (sshBuf state) getSshIdent
      print msg
      case msg of
        Right v_c -> do print v_c
-                       startKex gen priv pub (sshDhHash v_c greeting) state client
+                       startKex gen priv pub (sshDhHash v_c ident) state client
        Left err  -> do print err
                        return ()
 
