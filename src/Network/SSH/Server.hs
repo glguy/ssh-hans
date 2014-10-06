@@ -63,8 +63,6 @@ genKeyPair  =
      let (pub,priv,_) = generateKeyPair (gen :: CtrDRBG) 1024
          (p,q,_)      = generatePQ gen (1024 `div` 8)
          priv'        = priv { private_p = p, private_q = q }
-     writeFile "server.priv" (show priv')
-     writeFile "server.pub"  (show pub)
      return (priv', pub)
 
 
