@@ -5,7 +5,7 @@ module Network.SSH.Messages where
 
 import           Network.SSH.Protocol
 
-import           Control.Applicative ( (<$>) )
+import           Control.Applicative ( (<$>), (<*>) )
 import qualified Data.ByteString.Char8 as S
 import           Data.Serialize
                      ( Get, Putter, Put, label, isolate, getBytes, putByteString
@@ -28,6 +28,7 @@ data SshMsgTag = SshMsgTagDisconnect
                | SshMsgTagUserAuthFailure
                | SshMsgTagUserAuthSuccess
                | SshMsgTagUserAuthBanner
+               | SshMsgTagUserAuthPkOk
                | SshMsgTagGlobalRequest
                | SshMsgTagRequestSuccess
                | SshMsgTagRequestFailure
@@ -56,23 +57,75 @@ data SshMsg = SshMsgDisconnect SshDiscReason !S.ByteString !S.ByteString
             | SshMsgKexDhReply SshPubCert !Integer SshSig
             | SshMsgUserAuthRequest !S.ByteString SshService SshAuthMethod
             | SshMsgUserAuthFailure
+                 [S.ByteString] -- Supported methods
+                 Bool           -- Partial success
+            | SshMsgUserAuthPkOk
+                 !S.ByteString -- key algorithm
+                 !SshPubCert   -- key blob
             | SshMsgUserAuthSuccess
-            | SshMsgUserAuthBanner
+            | SshMsgUserAuthBanner !S.ByteString !S.ByteString
             | SshMsgGlobalRequest
             | SshMsgRequestSuccess
             | SshMsgRequestFailure
-            | SshMsgChannelOpen
-            | SshMsgChannelOpenConfirmation
-            | SshMsgChannelOpenFailure
+            | SshMsgChannelOpen !SshChannelType !Word32 !Word32 !Word32
+            | SshMsgChannelOpenConfirmation !Word32 !Word32 !Word32 !Word32
+            | SshMsgChannelOpenFailure !Word32 !SshOpenFailure !S.ByteString !S.ByteString
             | SshMsgChannelWindowAdjust
-            | SshMsgChannelData
+            | SshMsgChannelData !Word32 !S.ByteString
             | SshMsgChannelExtendedData
             | SshMsgChannelEof
-            | SshMsgChannelClose
-            | SshMsgChannelRequest
-            | SshMsgChannelSuccess
-            | SshMsgChannelFailure
+            | SshMsgChannelClose !Word32
+            | SshMsgChannelRequest !SshChannelRequest !Word32 !Bool
+            | SshMsgChannelSuccess !Word32
+            | SshMsgChannelFailure !Word32
               deriving (Show,Eq)
+
+
+openFailureToCode :: SshOpenFailure -> Word32
+openFailureToCode x =
+  case x of
+    SshOpenAdministrativelyProhibited -> 1
+    SshOpenConnectFailed              -> 2
+    SshOpenUnknownChannelType         -> 3
+    SshOpenResourceShortage           -> 4
+
+codeToOpenFailure :: Word32 -> Maybe SshOpenFailure
+codeToOpenFailure x =
+  case x of
+    1 -> Just SshOpenAdministrativelyProhibited
+    2 -> Just SshOpenConnectFailed
+    3 -> Just SshOpenUnknownChannelType
+    4 -> Just SshOpenResourceShortage
+    _ -> Nothing
+
+data SshOpenFailure
+  = SshOpenAdministrativelyProhibited
+  | SshOpenConnectFailed
+  | SshOpenUnknownChannelType
+  | SshOpenResourceShortage
+  deriving (Read, Show, Eq, Ord)
+
+data SshChannelRequestTag
+  = SshChannelRequestTagPtyReq
+  | SshChannelRequestTagX11Req
+  | SshChannelRequestTagEnv
+  | SshChannelRequestTagShell
+  | SshChannelRequestTagExec
+  | SshChannelRequestTagSubsystem
+  | SshChannelRequestTagWindowChange
+  | SshChannelRequestTagXonXoff
+  | SshChannelRequestTagSignal
+  | SshChannelRequestTagExitStatus
+  | SshChannelRequestTagExitSignal
+  deriving (Read,Show,Eq,Ord)
+
+data SshChannelRequest
+  = SshChannelRequestPtyReq S.ByteString Word32 Word32 Word32 Word32 S.ByteString
+  | SshChannelRequestEnv !S.ByteString !S.ByteString
+  | SshChannelRequestShell
+  | SshChannelRequestExec !S.ByteString
+  | SshChannelRequestSubsystem !S.ByteString
+  deriving (Read,Show,Eq,Ord)
 
 sshMsgTag :: SshMsg -> SshMsgTag
 sshMsgTag msg = case msg of
@@ -90,6 +143,7 @@ sshMsgTag msg = case msg of
   SshMsgUserAuthFailure         {} -> SshMsgTagUserAuthFailure
   SshMsgUserAuthSuccess         {} -> SshMsgTagUserAuthSuccess
   SshMsgUserAuthBanner          {} -> SshMsgTagUserAuthBanner
+  SshMsgUserAuthPkOk            {} -> SshMsgTagUserAuthPkOk
   SshMsgGlobalRequest           {} -> SshMsgTagGlobalRequest
   SshMsgRequestSuccess          {} -> SshMsgTagRequestSuccess
   SshMsgRequestFailure          {} -> SshMsgTagRequestFailure
@@ -162,11 +216,26 @@ data SshSig = SshSigDss !Integer !Integer
 
 newtype SshSessionId = SshSessionId S.ByteString
 
-data SshAuthMethod = SshAuthPublicKey Bool SshPubCert SshSig
-                   | SshAuthPassword Bool !S.ByteString
-                   | SshAuthHostBased
+data SshAuthMethod = SshAuthPublicKey S.ByteString SshPubCert (Maybe SshSig)
+                   | SshAuthPassword !S.ByteString (Maybe S.ByteString)
+                   | SshAuthHostBased !S.ByteString !S.ByteString !S.ByteString !S.ByteString !S.ByteString
                    | SshAuthNone
                      deriving (Show,Eq)
+
+data SshChannelTypeTag
+  = SshChannelTypeTagSession
+  | SshChannelTypeTagX11
+  | SshChannelTypeTagForwardedTcpIp
+  | SshChannelTypeTagDirectTcpIp
+  deriving (Read,Show,Eq,Ord)
+
+data SshChannelType
+  = SshChannelTypeSession
+  | SshChannelTypeX11 S.ByteString Word32
+  | SshChannelTypeForwardedTcpIp S.ByteString Word32 S.ByteString Word32
+  | SshChannelTypeDirectTcpIp S.ByteString Word32 S.ByteString Word32
+  deriving (Read,Show,Eq,Ord)
+
 
 
 -- Rendering -------------------------------------------------------------------
@@ -187,6 +256,7 @@ putSshMsgTag msg = putWord8 $! case msg of
   SshMsgTagUserAuthFailure         -> 51
   SshMsgTagUserAuthSuccess         -> 52
   SshMsgTagUserAuthBanner          -> 53
+  SshMsgTagUserAuthPkOk            -> 60
   SshMsgTagGlobalRequest           -> 80
   SshMsgTagRequestSuccess          -> 81
   SshMsgTagRequestFailure          -> 82
@@ -219,23 +289,26 @@ putSshMsg msg =
        SshMsgKexDhReply c f s           -> putDhReply c f s
 
        SshMsgUserAuthRequest         {} -> fail "unimplemented"
-       SshMsgUserAuthFailure         {} -> fail "unimplemented"
-       SshMsgUserAuthSuccess         {} -> fail "unimplemented"
-       SshMsgUserAuthBanner          {} -> fail "unimplemented"
+       SshMsgUserAuthFailure ms p       -> putUserAuthFailure ms p
+       SshMsgUserAuthSuccess            -> return ()
+       SshMsgUserAuthBanner msg lang    -> putString msg >> putString lang
+       SshMsgUserAuthPkOk alg key       -> putUserAuthPkOk alg key
        SshMsgGlobalRequest           {} -> fail "unimplemented"
        SshMsgRequestSuccess          {} -> fail "unimplemented"
        SshMsgRequestFailure          {} -> fail "unimplemented"
        SshMsgChannelOpen             {} -> fail "unimplemented"
-       SshMsgChannelOpenConfirmation {} -> fail "unimplemented"
-       SshMsgChannelOpenFailure      {} -> fail "unimplemented"
+       SshMsgChannelOpenConfirmation chan1 chan2 win maxPack -> putWord32be chan1 >> putWord32be chan2 >>
+                                                                putWord32be win   >> putWord32be maxPack
+       SshMsgChannelOpenFailure c r d l -> putWord32be c >> putWord32be (openFailureToCode r) >>
+                                           putString d   >> putString l
        SshMsgChannelWindowAdjust     {} -> fail "unimplemented"
-       SshMsgChannelData             {} -> fail "unimplemented"
+       SshMsgChannelData chan bytes     -> putWord32be chan >> putString bytes
        SshMsgChannelExtendedData     {} -> fail "unimplemented"
        SshMsgChannelEof              {} -> fail "unimplemented"
-       SshMsgChannelClose            {} -> fail "unimplemented"
+       SshMsgChannelClose chan          -> putWord32be chan
        SshMsgChannelRequest          {} -> fail "unimplemented"
-       SshMsgChannelSuccess          {} -> fail "unimplemented"
-       SshMsgChannelFailure          {} -> fail "unimplemented"
+       SshMsgChannelSuccess chan        -> putWord32be chan
+       SshMsgChannelFailure chan        -> putWord32be chan
 
 
 putDebug :: Bool -> S.ByteString -> S.ByteString -> Put
@@ -336,6 +409,18 @@ putSshService SshUserAuth            = putString "ssh-userauth"
 putSshService SshConnection          = putString "ssh-connection"
 putSshService (SshServiceOther name) = putString name
 
+putUserAuthFailure :: [S.ByteString] -> Bool -> Put
+putUserAuthFailure methods partialSuccess =
+  do putNameList methods
+     putBoolean partialSuccess
+
+putUserAuthPkOk :: S.ByteString -> SshPubCert -> Put
+putUserAuthPkOk alg key =
+  do putString alg
+     putString (runPut (putSshPubCert key))
+
+putSessionId :: Putter SshSessionId
+putSessionId (SshSessionId sessionId) = putString sessionId
 
 -- Parsing ---------------------------------------------------------------------
 
@@ -357,6 +442,7 @@ getSshMsgTag  = label "SshMsgTag" $
        51  -> return SshMsgTagUserAuthFailure
        52  -> return SshMsgTagUserAuthSuccess
        53  -> return SshMsgTagUserAuthBanner
+       60  -> return SshMsgTagUserAuthPkOk
        80  -> return SshMsgTagGlobalRequest
        81  -> return SshMsgTagRequestSuccess
        82  -> return SshMsgTagRequestFailure
@@ -388,23 +474,25 @@ getSshMsg  =
        SshMsgTagKexDhInit               -> SshMsgKexDhInit  <$> getMpInt
        SshMsgTagKexDhReply              -> getDhReply
        SshMsgTagUserAuthRequest         -> getAuthRequest
-       SshMsgTagUserAuthFailure         -> fail (show tag ++ ": not implemented")
-       SshMsgTagUserAuthSuccess         -> fail (show tag ++ ": not implemented")
-       SshMsgTagUserAuthBanner          -> fail (show tag ++ ": not implemented")
+       SshMsgTagUserAuthFailure         -> getUserAuthFailure
+       SshMsgTagUserAuthSuccess         -> return SshMsgUserAuthSuccess
+       SshMsgTagUserAuthBanner          -> SshMsgUserAuthBanner <$> getString <*> getString
+       SshMsgTagUserAuthPkOk            -> getUserAuthPkOk
        SshMsgTagGlobalRequest           -> fail (show tag ++ ": not implemented")
        SshMsgTagRequestSuccess          -> fail (show tag ++ ": not implemented")
        SshMsgTagRequestFailure          -> fail (show tag ++ ": not implemented")
-       SshMsgTagChannelOpen             -> fail (show tag ++ ": not implemented")
+       SshMsgTagChannelOpen             -> getChannelOpen
        SshMsgTagChannelOpenConfirmation -> fail (show tag ++ ": not implemented")
-       SshMsgTagChannelOpenFailure      -> fail (show tag ++ ": not implemented")
+       SshMsgTagChannelOpenFailure      -> SshMsgChannelOpenFailure <$> getWord32be <*> getOpenFailure
+                                                                    <*> getString   <*> getString
        SshMsgTagChannelWindowAdjust     -> fail (show tag ++ ": not implemented")
-       SshMsgTagChannelData             -> fail (show tag ++ ": not implemented")
+       SshMsgTagChannelData             -> SshMsgChannelData <$> getWord32be <*> getString
        SshMsgTagChannelExtendedData     -> fail (show tag ++ ": not implemented")
        SshMsgTagChannelEof              -> fail (show tag ++ ": not implemented")
-       SshMsgTagChannelClose            -> fail (show tag ++ ": not implemented")
-       SshMsgTagChannelRequest          -> fail (show tag ++ ": not implemented")
-       SshMsgTagChannelSuccess          -> fail (show tag ++ ": not implemented")
-       SshMsgTagChannelFailure          -> fail (show tag ++ ": not implemented")
+       SshMsgTagChannelClose            -> SshMsgChannelClose <$> getWord32be
+       SshMsgTagChannelRequest          -> getChannelRequest
+       SshMsgTagChannelSuccess          -> SshMsgChannelSuccess <$> getWord32be
+       SshMsgTagChannelFailure          -> SshMsgChannelFailure <$> getWord32be
 
 getSshDiscReason :: Get SshDiscReason
 getSshDiscReason  = label "SshDiscReason" $
@@ -535,17 +623,143 @@ getAuthMethod  = label "SshAuthMethod" $
   do tag <- getString
      case tag of
        "publickey" ->
-         do b <- getBoolean
-            undefined
+         do hasSignature <- getBoolean
+            pubKeyAlg    <- getString
+            pubKeyLen    <- getWord32be
+            pubKey       <- isolate (fromIntegral pubKeyLen) getSshPubCert
+            sig          <- if hasSignature
+                            then do sigLen    <- getWord32be
+                                    sig       <- isolate (fromIntegral sigLen)
+                                                         getSshSig
+                                    return (Just sig)
+                            else return Nothing
+            return (SshAuthPublicKey pubKeyAlg pubKey sig)
 
        "password" ->
-            undefined
+         do hasNewPassword <- getBoolean
+            oldPassword    <- getString
+            newPassword    <- if hasNewPassword
+                              then fmap Just getString
+                              else return Nothing
+            return (SshAuthPassword oldPassword newPassword)
 
        "hostbased" ->
-            undefined
+         do hostKeyAlg <- getString
+            hostKey    <- getString
+            hostname   <- getString
+            username   <- getString
+            signature  <- getString
+            return
+              (SshAuthHostBased hostKeyAlg hostKey hostname username signature)
 
        "none" ->
             return SshAuthNone
 
        _ ->
             fail ("Unknown auth method: " ++ S.unpack tag)
+
+getUserAuthFailure :: Get SshMsg
+getUserAuthFailure =
+  do methods        <- getNameList
+     partialSuccess <- getBoolean
+     return (SshMsgUserAuthFailure methods partialSuccess)
+
+getUserAuthPkOk :: Get SshMsg
+getUserAuthPkOk =
+  do keyAlg  <- getString
+     keyLen  <- getWord32be
+     key     <- isolate (fromIntegral keyLen) getSshPubCert
+     return (SshMsgUserAuthPkOk keyAlg key)
+
+getSessionId :: Get SshSessionId
+getSessionId = fmap SshSessionId getString
+
+getChannelOpen :: Get SshMsg
+getChannelOpen =
+  do channelTypeTag    <- getChannelTypeTag
+     senderChannel     <- getWord32be
+     initialWindowSize <- getWord32be
+     maximumPacketSize <- getWord32be
+     ty <- case channelTypeTag of
+             SshChannelTypeTagSession ->
+                return SshChannelTypeSession
+             SshChannelTypeTagX11     ->
+                do address <- getString
+                   port    <- getWord32be
+                   return (SshChannelTypeX11 address port)
+             SshChannelTypeTagForwardedTcpIp ->
+                do address1 <- getString
+                   port1    <- getWord32be
+                   address2 <- getString
+                   port2    <- getWord32be
+                   return (SshChannelTypeForwardedTcpIp address1 port1 address2 port2)
+             SshChannelTypeTagDirectTcpIp ->
+                do address1 <- getString
+                   port1    <- getWord32be
+                   address2 <- getString
+                   port2    <- getWord32be
+                   return (SshChannelTypeDirectTcpIp address1 port1 address2 port2)
+     return (SshMsgChannelOpen ty senderChannel initialWindowSize maximumPacketSize)
+
+getChannelTypeTag :: Get SshChannelTypeTag
+getChannelTypeTag =
+  do t <- getString
+     case t of
+       "session"         -> return SshChannelTypeTagSession
+       "x11"             -> return SshChannelTypeTagX11
+       "forwarded-tcpip" -> return SshChannelTypeTagForwardedTcpIp
+       "direct-tcpip"    -> return SshChannelTypeTagDirectTcpIp
+       _         -> fail ("Unknown channel type: " ++ S.unpack t)
+
+getChannelRequestTag :: Get SshChannelRequestTag
+getChannelRequestTag =
+  do tag <- getString
+     case tag of
+       "pty-req"       -> return SshChannelRequestTagPtyReq
+       "x11-req"       -> return SshChannelRequestTagX11Req
+       "env"           -> return SshChannelRequestTagEnv
+       "shell"         -> return SshChannelRequestTagShell
+       "exec"          -> return SshChannelRequestTagExec
+       "subsystem"     -> return SshChannelRequestTagSubsystem
+       "window-change" -> return SshChannelRequestTagWindowChange
+       "xon-xoff"      -> return SshChannelRequestTagXonXoff
+       "signal"        -> return SshChannelRequestTagSignal
+       "exit-status"   -> return SshChannelRequestTagExitStatus
+       "exit-signal"   -> return SshChannelRequestTagExitSignal
+       _               -> fail ("Unknown request tag: " ++ S.unpack tag)
+
+getChannelRequest :: Get SshMsg
+getChannelRequest =
+  do recipientChannel <- getWord32be
+     requestTag       <- getChannelRequestTag
+     wantReply        <- getBoolean
+     request <- case requestTag of
+       SshChannelRequestTagPtyReq ->
+         do term        <- getString
+            widthChar   <- getWord32be
+            heightChar  <- getWord32be
+            widthPixel  <- getWord32be
+            heightPixel <- getWord32be
+            modes       <- getString
+            return (SshChannelRequestPtyReq term widthChar heightChar widthPixel heightPixel modes)
+       SshChannelRequestTagEnv ->
+         do name  <- getString
+            value <- getString
+            return (SshChannelRequestEnv name value)
+       SshChannelRequestTagShell ->
+            return SshChannelRequestShell
+       SshChannelRequestTagExec ->
+            SshChannelRequestExec <$> getString
+       SshChannelRequestTagSubsystem ->
+            SshChannelRequestSubsystem <$> getString
+
+       _ -> fail ("Unsupported request: " ++ show requestTag )
+
+     return (SshMsgChannelRequest request recipientChannel wantReply)
+
+getOpenFailure :: Get SshOpenFailure
+getOpenFailure =
+  do code <- getWord32be
+     case codeToOpenFailure code of
+       Just tag -> return tag
+       Nothing  -> fail "Unknown Channel Open Failure type"

@@ -20,6 +20,7 @@ library
                        Network.SSH.Messages
                        Network.SSH.Protocol
                        Network.SSH.Packet
+                       Network.SSH.UserAuth
   build-depends:       base >=4.7 && <4.8,
                        cereal >= 0.4.0.1,
                        bytestring,
@@ -30,6 +31,10 @@ library
                        monadcryptorandom,
                        DRBG,
                        crypto-pubkey-types,
+                       transformers,
+                       containers,
+                       io-streams,
+                       stm,
                        RSA
   hs-source-dirs:      src
   default-language:    Haskell2010

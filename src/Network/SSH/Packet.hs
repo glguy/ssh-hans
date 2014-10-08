@@ -16,13 +16,13 @@ import           Data.Serialize
                      ( Get, Put, runGet, runPut, label, isolate, remaining
                      , lookAhead, skip, getBytes, getWord8, putWord8
                      , getWord32be, putWord32be, Putter, putByteString )
-
+import           Data.Word ( Word32 )
 
 data SshIdent = SshIdent { sshProtoVersion
                          , sshSoftwareVersion
                          , sshComments        :: !S.ByteString
                          } deriving (Show,Eq)
- 
+
 -- Hash Generation -------------------------------------------------------------
 
 sshDhHash :: SshIdent       -- ^ V_C
@@ -146,7 +146,7 @@ getSshIdent  = label "SshIdent" $
 
 -- | Given a way to parse the payload of an ssh packet, do the required
 -- book-keeping surrounding the data.
-getSshPacket :: Cipher -> Mac -> Get a -> Get (a,Cipher,Mac)
+getSshPacket :: Show a =>  Cipher -> Mac -> Get a -> Get (a,Cipher,Mac)
 getSshPacket cipher mac getPayload = label "SshPacket" $
   do let blockLen = max (blockSize cipher) 8
      ((packetLen,paddingLen),_) <- lookAhead $ decryptGet blockLen $
