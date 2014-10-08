@@ -169,8 +169,8 @@ getSshPacket cipher mac getPayload = label "SshPacket" $
 
           return (payload,sig',mac')
 
-     sig <- getBytes =<< remaining
-     unless (sig == sig') (fail "Signature validation failed")
+     sig <- getBytes (S.length sig')
+     unless (sig == sig') (fail ("Signature validation failed: " ++ show (sig, sig')))
 
      return (payload, cipher', mac')
 
