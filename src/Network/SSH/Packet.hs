@@ -8,7 +8,7 @@ import Network.SSH.Mac
 import Network.SSH.Messages
 import Network.SSH.Protocol
 
-import           Control.Monad ( unless, guard, msum )
+import           Control.Monad ( unless, guard, msum, ap )
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Lazy as L
 import           Data.Char ( chr )
@@ -115,34 +115,20 @@ getCh c =
      guard (c == chr (fromIntegral c'))
 
 getBytesUntil :: Get () -> Get S.ByteString
-getBytesUntil end =
-  do start      <- remaining
-     (off,stop) <- lookAhead (go 0)
-     guard (off > 0)
-     bytes      <- getBytes off
-     -- skip the length of the ending action
-     skip (start - (stop + off))
-     return bytes
-  where
-  go off = msum [ do end
-                     stop <- remaining
-                     return (off, stop)
-                , do _ <- getWord8
-                     go $! off + 1
-                ]
+getBytesUntil end = msum [final, first]
+  -- XXX This is slow, but doesn't require 'remaining', which is bad for
+  -- incremental parsers.
+ where
+  final = end >> return S.empty
+  first = S.cons `fmap` getWord8 `ap` getBytesUntil end
 
 getSshIdent :: Get SshIdent
 getSshIdent  = label "SshIdent" $
   do "SSH"              <- getBytesUntil (getCh '-')
      sshProtoVersion    <- getBytesUntil (getCh '-')
-
-     msum [ do sshSoftwareVersion <- getBytesUntil (getCh ' ')
-               sshComments        <- getBytesUntil  getCrLf
-               return SshIdent { .. }
-          , do sshSoftwareVersion <- getBytesUntil  getCrLf
-               let sshComments = ""
-               return SshIdent { .. }
-          ]
+     sshSoftwareVersion <- getBytesUntil (msum [getCh ' ', getCh '\r'])
+     sshComments        <- getBytesUntil (getCh '\n')
+     return SshIdent{..}
 
 -- | Given a way to parse the payload of an ssh packet, do the required
 -- book-keeping surrounding the data.

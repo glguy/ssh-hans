@@ -118,7 +118,7 @@ parseFrom handle buffer body =
   go True  (Partial k) = do bytes <- cGet handle 1024
                             if S.null bytes
                                then fail "Client closed connection"
-                               else go (S.length bytes == 1024) (k bytes)
+                               else go True (k bytes)
 
   go False (Partial k) = go False (k S.empty)
   go _     (Done a bs) = do writeIORef buffer bs
