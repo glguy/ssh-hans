@@ -20,7 +20,7 @@ library
                        Network.SSH.Messages
                        Network.SSH.Protocol
                        Network.SSH.Packet
-  build-depends:       base >=4.7 && <4.8,
+  build-depends:       base >=4.7 && <5,
                        cereal >= 0.4.0.1,
                        bytestring,
                        cipher-aes128,
