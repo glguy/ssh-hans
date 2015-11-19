@@ -70,7 +70,7 @@ data SshMsg = SshMsgDisconnect SshDiscReason !S.ByteString !S.ByteString
             | SshMsgChannelOpen !SshChannelType !Word32 !Word32 !Word32
             | SshMsgChannelOpenConfirmation !Word32 !Word32 !Word32 !Word32
             | SshMsgChannelOpenFailure !Word32 !SshOpenFailure !S.ByteString !S.ByteString
-            | SshMsgChannelWindowAdjust
+            | SshMsgChannelWindowAdjust !Word32 !Word32
             | SshMsgChannelData !Word32 !S.ByteString
             | SshMsgChannelExtendedData
             | SshMsgChannelEof
@@ -120,12 +120,17 @@ data SshChannelRequestTag
   deriving (Read,Show,Eq,Ord)
 
 data SshChannelRequest
-  = SshChannelRequestPtyReq S.ByteString Word32 Word32 Word32 Word32 S.ByteString
+  = SshChannelRequestPtyReq S.ByteString SshWindowSize S.ByteString
   | SshChannelRequestEnv !S.ByteString !S.ByteString
   | SshChannelRequestShell
   | SshChannelRequestExec !S.ByteString
   | SshChannelRequestSubsystem !S.ByteString
+  | SshChannelRequestWindowChange !SshWindowSize
   deriving (Read,Show,Eq,Ord)
+
+data SshWindowSize = SshWindowSize
+  { sshWsCols, sshWsRows, sshWsX, sshWsY :: !Word32 }
+  deriving (Read, Show, Ord, Eq)
 
 sshMsgTag :: SshMsg -> SshMsgTag
 sshMsgTag msg = case msg of
@@ -164,7 +169,8 @@ data SshService = SshUserAuth
                 | SshServiceOther !S.ByteString
                   deriving (Show,Eq)
 
-data SshDiscReason = SshDiscHostNotAllowed
+data SshDiscReason = SshDiscNoReason
+                   | SshDiscHostNotAllowed
                    | SshDiscProtocolError
                    | SshDiscKexFailed
                    | SshDiscReserved
@@ -301,7 +307,7 @@ putSshMsg msg =
                                                                 putWord32be win   >> putWord32be maxPack
        SshMsgChannelOpenFailure c r d l -> putWord32be c >> putWord32be (openFailureToCode r) >>
                                            putString d   >> putString l
-       SshMsgChannelWindowAdjust     {} -> fail "unimplemented"
+       SshMsgChannelWindowAdjust chan adj -> putWord32be chan >> putWord32be adj
        SshMsgChannelData chan bytes     -> putWord32be chan >> putString bytes
        SshMsgChannelExtendedData     {} -> fail "unimplemented"
        SshMsgChannelEof              {} -> fail "unimplemented"
@@ -382,6 +388,7 @@ putDhReply cert f sig =
 
 putSshDiscReason :: Putter SshDiscReason
 putSshDiscReason r = putWord8 $! case r of
+  SshDiscNoReason                    -> 0
   SshDiscHostNotAllowed              -> 1
   SshDiscProtocolError               -> 2
   SshDiscKexFailed                   -> 3
@@ -483,9 +490,11 @@ getSshMsg  =
        SshMsgTagRequestFailure          -> fail (show tag ++ ": not implemented")
        SshMsgTagChannelOpen             -> getChannelOpen
        SshMsgTagChannelOpenConfirmation -> fail (show tag ++ ": not implemented")
-       SshMsgTagChannelOpenFailure      -> SshMsgChannelOpenFailure <$> getWord32be <*> getOpenFailure
-                                                                    <*> getString   <*> getString
-       SshMsgTagChannelWindowAdjust     -> fail (show tag ++ ": not implemented")
+       SshMsgTagChannelOpenFailure      -> SshMsgChannelOpenFailure
+                                                <$> getWord32be <*> getOpenFailure
+                                                <*> getString   <*> getString
+       SshMsgTagChannelWindowAdjust     -> SshMsgChannelWindowAdjust
+                                                <$> getWord32be <*> getWord32be
        SshMsgTagChannelData             -> SshMsgChannelData <$> getWord32be <*> getString
        SshMsgTagChannelExtendedData     -> fail (show tag ++ ": not implemented")
        SshMsgTagChannelEof              -> fail (show tag ++ ": not implemented")
@@ -498,6 +507,7 @@ getSshDiscReason :: Get SshDiscReason
 getSshDiscReason  = label "SshDiscReason" $
   do tag <- getWord8
      case tag of
+       0  -> return SshDiscNoReason
        1  -> return SshDiscHostNotAllowed
        2  -> return SshDiscProtocolError
        3  -> return SshDiscKexFailed
@@ -728,6 +738,10 @@ getChannelRequestTag =
        "exit-signal"   -> return SshChannelRequestTagExitSignal
        _               -> fail ("Unknown request tag: " ++ S.unpack tag)
 
+getWindowSize :: Get SshWindowSize
+getWindowSize =
+  SshWindowSize <$> getWord32be <*> getWord32be <*> getWord32be <*> getWord32be
+
 getChannelRequest :: Get SshMsg
 getChannelRequest =
   do recipientChannel <- getWord32be
@@ -735,13 +749,7 @@ getChannelRequest =
      wantReply        <- getBoolean
      request <- case requestTag of
        SshChannelRequestTagPtyReq ->
-         do term        <- getString
-            widthChar   <- getWord32be
-            heightChar  <- getWord32be
-            widthPixel  <- getWord32be
-            heightPixel <- getWord32be
-            modes       <- getString
-            return (SshChannelRequestPtyReq term widthChar heightChar widthPixel heightPixel modes)
+         SshChannelRequestPtyReq <$> getString <*> getWindowSize <*> getString
        SshChannelRequestTagEnv ->
          do name  <- getString
             value <- getString
@@ -752,6 +760,8 @@ getChannelRequest =
             SshChannelRequestExec <$> getString
        SshChannelRequestTagSubsystem ->
             SshChannelRequestSubsystem <$> getString
+       SshChannelRequestTagWindowChange ->
+            SshChannelRequestWindowChange <$> getWindowSize
 
        _ -> fail ("Unsupported request: " ++ show requestTag )
 

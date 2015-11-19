@@ -9,14 +9,28 @@ import           Network.SSH.Messages
 import           Network.SSH.UserAuth
 
 import           Control.Monad ( forever )
+import           Control.Exception
 import qualified Data.ByteString as S
+import qualified Data.ByteString.Internal as S
+import qualified Data.ByteString.Char8 as S8
+import qualified Data.ByteString.Unsafe as S
 import qualified Data.ByteString.Lazy as L
+import           Data.Monoid ( mempty )
 import           Network
                      ( PortID(..), HostName, PortNumber, withSocketsDo, listenOn
                      , accept, Socket )
 import           System.Directory ( doesFileExist )
-import           System.IO ( Handle, hGetChar, hClose, hGetLine, hPutStrLn )
+import           System.IO ( Handle, hClose )
 
+import System.Posix.IO ( fdToHandle, closeFd )
+import Foreign.Marshal ( allocaBytes, copyArray )
+import Foreign.Ptr ( castPtr )
+import Control.Concurrent
+import qualified SetGame
+import qualified Graphics.Vty as Vty
+
+import Openpty
+import UnixTerminalFlags
 
 main :: IO ()
 main  = withSocketsDo $
@@ -39,6 +53,15 @@ emertensPubKey = SshPubRsa 35 25964490825869075456565315133613317015447736312131
 credentials :: [(S.ByteString, SshPubCert)]
 credentials = [("emertens", emertensPubKey)]
 
+convertWindowSize :: SshWindowSize -> Winsize
+convertWindowSize winsize =
+  Winsize
+    { wsRow    = fromIntegral $ sshWsRows winsize
+    , wsCol    = fromIntegral $ sshWsCols winsize
+    , wsXPixel = fromIntegral $ sshWsX    winsize
+    , wsYPixel = fromIntegral $ sshWsY    winsize
+    }
+
 mkClient :: (Handle,HostName,PortNumber) -> Client
 mkClient (h,_,_) = Client { .. }
   where
@@ -46,12 +69,43 @@ mkClient (h,_,_) = Client { .. }
   cPut   = L.hPutStr  h
   cClose =   hClose   h
 
-  cOpenShell h =
-    do 
-       forever $
-         do xs <- hGetChar h
-            print xs
-            hPutStrLn h ("Echoing <" ++ xs : ">")
+  cOpenShell (term,winsize,termflags) eventChannel writeBytes =
+    do (masterFd, slaveFd) <-
+         openpty
+           Nothing
+           (Just (convertWindowSize winsize))
+           (Just (foldl (\t (key,val) -> setTerminalFlag key val t) defaultTermios
+                     termflags))
+
+       masterH <- fdToHandle masterFd
+
+       _ <- forkIO $
+         forever (do out <- S.hGetSome masterH 1024
+                     writeBytes (Just out)
+                 ) `finally` writeBytes Nothing
+
+       _ <- forkIO $
+         allocaBytes 1024 $ \p ->
+         let loop = do event <- readChan eventChannel
+                       case event of
+                         SessionClose ->
+                           do closeFd masterFd
+                              closeFd slaveFd
+                         SessionWinsize winsize' ->
+                           do changePtyWinsize masterFd (convertWindowSize winsize')
+                              loop
+                         SessionData bs ->
+                           do S.hPut masterH bs
+                              loop
+         in loop
+
+       let config = mempty { Vty.inputFd  = Just slaveFd
+                           , Vty.outputFd = Just slaveFd
+                           , Vty.termName = Just (S8.unpack term)
+                           }
+
+       SetGame.gameMain config
+       hClose masterH
 
   cAuthHandler session_id username svc m@(SshAuthPublicKey alg key mbSig) =
     case lookup username credentials of

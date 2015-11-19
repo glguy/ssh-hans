@@ -6,6 +6,7 @@ module Network.SSH.Server (
 
     Server(..)
   , Client(..)
+  , SessionEvent(..)
   , AuthResult(..)
   , sshServer
 
@@ -16,15 +17,15 @@ module Network.SSH.Server (
   ) where
 
 import           Network.SSH.Ciphers
+import           Network.SSH.Connection
 import           Network.SSH.Keys
 import           Network.SSH.Mac
 import           Network.SSH.Messages
 import           Network.SSH.Packet
+import           Network.SSH.State
 
-import           Control.Concurrent ( forkIO )
+import           Control.Concurrent
 import qualified Control.Exception as X
-import           Control.Applicative ( Applicative )
-import           Control.Monad ( forever, when )
 import           Control.Monad.CryptoRandom ( crandomR )
 import           Crypto.Classes.Exceptions ( newGenIO, genBytes, splitGen )
 import           Crypto.Random.DRBG ( CtrDRBG )
@@ -35,47 +36,13 @@ import           Codec.Crypto.RSA.Exceptions
 import qualified Data.ByteString.Char8 as S
 import qualified Data.ByteString.Lazy as L
 import           Data.IORef
-                     ( IORef, newIORef, readIORef, writeIORef, modifyIORef )
+                     ( writeIORef, modifyIORef )
 import           Data.Serialize
-                     ( Get, runGetPartial, Result(..), runPutLazy )
-import           Data.Word ( Word32 )
-import           Data.Foldable ( for_ )
-import           System.IO
-import           Control.Concurrent.STM
-
--- Containers
-import           Data.Map ( Map )
-import qualified Data.Map as Map
-
--- Transformers
-import           Control.Monad.IO.Class
-import           Control.Monad.Trans.Class
-import           Control.Monad.Trans.Reader
-import           Control.Monad.Trans.State
-
--- Custom handles
-import System.IO.Streams
-import System.IO.Streams.Handle ( streamPairToHandle )
-
+                     ( runPutLazy )
 
 -- Public API ------------------------------------------------------------------
 
 data Server = Server { sAccept :: IO Client
-                     }
-
-data AuthResult = AuthFailed [S.ByteString]
-                | AuthAccepted
-                | AuthPkOk S.ByteString SshPubCert
-
-data Client = Client { cGet         :: Int -> IO S.ByteString
-                     , cPut         :: L.ByteString -> IO ()
-                     , cOpenShell   :: Handle -> IO ()
-                     , cClose       :: IO ()
-                     , cAuthHandler :: SshSessionId  ->
-                                       S.ByteString  ->
-                                       SshService    ->
-                                       SshAuthMethod ->
-                                       IO AuthResult
                      }
 
 sshServer :: SshIdent -> PrivateKey -> PublicKey -> Server -> IO ()
@@ -84,12 +51,16 @@ sshServer ident privKey pubKey sock = loop =<< newGenIO
   loop g = do client <- sAccept sock
               let (g',gClient) = splitGen g
               _ <- forkIO $
-                     do state <- initialState
+                     do state  <- initialState
                         result <- sayHello state ident gClient privKey pubKey client
-                        for_ result $ \(user,svc) ->
-                          case svc of
-                            SshConnection -> startConnectionService client state
-                            _             -> return ()
+                        case result of
+                          Nothing -> send client state
+                                        (SshMsgDisconnect SshDiscNoMoreAuthMethodsAvailable
+                                                 "" "")
+                          Just (_user,svc) ->
+                            case svc of
+                              SshConnection -> startConnectionService client state
+                              _             -> return ()
 
                       `X.finally` cClose client
 
@@ -105,97 +76,26 @@ genKeyPair  =
      return (priv', pub)
 
 
--- Server Internals ------------------------------------------------------------
-
-data SshState = SshState { sshDecC  :: !(IORef Cipher) -- ^ Client decryption context
-                         , sshEncS  :: !(IORef Cipher) -- ^ Server encryption context
-                         , sshAuthC :: !(IORef Mac)    -- ^ Client authentication context
-                         , sshAuthS :: !(IORef Mac)    -- ^ Server authentication context
-                         , sshBuf   :: !(IORef S.ByteString)
-                           -- ^ Receive buffer
-                         }
-
-initialState :: IO SshState
-initialState  =
-  do sshDecC  <- newIORef cipher_none
-     sshEncS  <- newIORef cipher_none
-     sshAuthC <- newIORef mac_none
-     sshAuthS <- newIORef mac_none
-     sshBuf   <- newIORef S.empty
-     return SshState { .. }
-
-
 -- | Install new keys (and algorithms) into the SshState.
 transitionKeys :: Keys -> SshState -> IO ()
 transitionKeys Keys { .. } SshState { .. } =
   do writeIORef sshDecC (snd (cipher_aes128_cbc (kpClientToServer kInitialIV) (kpClientToServer kEncKey)))
-     writeIORef sshEncS (fst (cipher_aes128_cbc (kpServerToClient kInitialIV) (kpServerToClient kEncKey)))
 
      modifyIORef sshAuthC $ \ mac ->
        let mac' = mac_hmac_sha1 (kpClientToServer kIntegKey)
         in mac `switch` mac'
 
-     modifyIORef sshAuthS $ \ mac ->
-       let mac' = mac_hmac_sha1 (kpServerToClient kIntegKey)
-        in mac `switch` mac'
+     modifyMVar_ sshSendState $ \(_,mac) ->
+       let cipher = fst (cipher_aes128_cbc (kpServerToClient kInitialIV)
+                                           (kpServerToClient kEncKey))
+           mac' = mac_hmac_sha1 (kpServerToClient kIntegKey)
+        in return (cipher, mac `switch` mac')
 
      putStrLn "New keys installed."
 
 
 
 
-parseFrom :: Client -> IORef S.ByteString -> Get a -> IO (Either String a)
-parseFrom handle buffer body =
-  do bytes <- readIORef buffer
-
-     if S.null bytes
-        then go True (Partial (runGetPartial body))
-        else go True (runGetPartial body bytes)
-
-  where
-
-  go True  (Partial k) = do bytes <- cGet handle 1024
-                            if S.null bytes
-                               then fail "Client closed connection"
-                               else go (S.length bytes == 1024) (k bytes)
-
-  go False (Partial k) = go False (k S.empty)
-  go _     (Done a bs) = do writeIORef buffer bs
-                            return (Right a)
-  go _     (Fail s _)  = return (Left s)
-
-
-send :: Client -> SshState -> SshMsg -> IO ()
-send client SshState { .. } msg =
-  do cipher <- readIORef sshEncS
-     mac    <- readIORef sshAuthS
-     let (pkt,cipher',mac') = putSshPacket cipher mac (putSshMsg msg)
-     cPut client pkt
-     writeIORef sshEncS  cipher'
-     writeIORef sshAuthS mac'
-
-
-receive :: Client -> SshState -> IO SshMsg
-receive client SshState { .. } = loop
-  where
-  loop =
-    do cipher <- readIORef sshDecC
-       mac    <- readIORef sshAuthC
-       res    <- parseFrom client sshBuf (getSshPacket cipher mac getSshMsg)
-       case res of
-
-         Right (msg, cipher', mac') ->
-           do writeIORef sshDecC  cipher'
-              writeIORef sshAuthC mac'
-              case msg of
-                SshMsgIgnore _                      -> loop
-                SshMsgDebug display m _ | display   -> S.putStrLn m >> loop
-                                        | otherwise -> loop
-                _                                   -> return msg
-
-         Left err ->
-           do putStrLn err
-              fail "Failed when reading from client"
 
 sayHello ::
   SshState ->
@@ -343,168 +243,3 @@ getDhResponse client _gen _priv _pub session_id state keys =
                 _ -> notAvailable >> return Nothing
 
        _ -> notAvailable >> return Nothing
-
-
-data SshChannel = SshChannel
-  { sshChannelRemote        :: !Word32
-  , sshChannelEnv           :: [(S.ByteString,S.ByteString)]
-  , sshChannelWindowSize    :: Word32
-  , sshChannelMaximumPacket :: Word32
-  , sshChannelPty           :: Maybe (S.ByteString, Word32, Word32) -- Term, width, height
-  , sshChannelData          :: TVar L.ByteString
-  }
-
-----------------------
--- Connection operations
-----------------------
-
-newtype Connection a = Connection
-  { runConnection :: ReaderT (Client, SshState) (StateT (Map Word32 SshChannel) IO) a }
-  deriving (Functor, Applicative, Monad, MonadIO)
-
-connectionReceive :: Connection SshMsg
-connectionReceive = Connection $
-  do (client, state) <- ask
-     liftIO (receive client state)
-
-connectionSend :: SshMsg -> Connection ()
-connectionSend msg = Connection $
-  do (client, state) <- ask
-     liftIO (send client state msg)
-
-connectionGetChannels :: Connection (Map Word32 SshChannel)
-connectionGetChannels = Connection (lift get)
-
-connectionSetChannels :: Map Word32 SshChannel -> Connection ()
-connectionSetChannels = Connection . lift . put
-
-connectionModifyChannels :: (Map Word32 SshChannel -> Map Word32 SshChannel) -> Connection ()
-connectionModifyChannels = Connection . lift . modify
-
-----------------------
-
-startConnectionService :: Client -> SshState -> IO ()
-startConnectionService client state
-  = flip evalStateT Map.empty
-  . flip runReaderT (client, state)
-  . runConnection
-  $ connectionService
-
-connectionService :: Connection ()
-connectionService =
-  do msg <- connectionReceive
-     liftIO (print msg)
-     case msg of
-       SshMsgChannelOpen SshChannelTypeSession
-         senderChannel initialWindowSize maximumPacketSize ->
-           do startSession senderChannel initialWindowSize maximumPacketSize
-              connectionService
-
-       SshMsgChannelOpen _ senderChannel _ _ ->
-           do connectionSend $
-                SshMsgChannelOpenFailure senderChannel SshOpenAdministrativelyProhibited "" ""
-              connectionService
-
-       SshMsgChannelRequest req chan wantReply ->
-         do channelRequest req chan wantReply
-            connectionService
-
-       SshMsgChannelData chan bytes ->
-         do channelData chan bytes
-            connectionService
-
-       _ -> return ()
-
-
-startSession :: Word32 -> Word32 -> Word32 -> Connection ()
-startSession senderChannel initialWindowSize maximumPacketSize =
-  do channels <- connectionGetChannels
-
-     dataVar  <- liftIO (atomically (newTVar L.empty))
-
-     let nextChannelId =
-           case Map.maxViewWithKey channels of
-             Nothing        -> 0
-             Just ((k,_),_) -> k+1
-
-         channel = SshChannel
-                     { sshChannelRemote        = senderChannel
-                     , sshChannelWindowSize    = initialWindowSize
-                     , sshChannelMaximumPacket = maximumPacketSize
-                     , sshChannelEnv           = []
-                     , sshChannelPty           = Nothing
-                     , sshChannelData          = dataVar
-                     }
-
-     connectionSetChannels (Map.insert nextChannelId channel channels)
-
-     connectionSend $
-       SshMsgChannelOpenConfirmation
-         senderChannel
-         nextChannelId
-         initialWindowSize
-         maximumPacketSize
-
-channelData :: Word32 -> S.ByteString -> Connection ()
-channelData channelId bytes =
-  do channels <- connectionGetChannels
-     case Map.lookup channelId channels of
-       Nothing -> fail "Bad channel!"
-       Just channel -> liftIO
-                     $ atomically
-                     $ modifyTVar (sshChannelData channel) (`L.append` L.fromStrict bytes)
-
-channelRequest :: SshChannelRequest -> Word32 -> Bool -> Connection ()
-channelRequest request channelId wantReply =
-  do channels <- connectionGetChannels
-
-     case Map.lookup channelId channels of
-       Nothing      -> connectionSend (SshMsgDisconnect SshDiscProtocolError "" "")
-       Just channel ->
-         do result <- handleRequest request channelId channel
-            when wantReply $
-              connectionSend $
-                if result
-                  then SshMsgChannelSuccess (sshChannelRemote channel)
-                  else SshMsgChannelFailure (sshChannelRemote channel)
-
-handleRequest :: SshChannelRequest -> Word32 -> SshChannel -> Connection Bool
-handleRequest request channelId channel =
-  case request of
-    SshChannelRequestPtyReq term widthChar heightChar _widthPixel _heightPixel _modes ->
-      do let channel' = channel
-               { sshChannelPty = Just (term, widthChar, heightChar)
-               }
-         connectionModifyChannels (Map.insert channelId channel')
-         return True
-
-    SshChannelRequestEnv name value ->
-      do let channel' = channel
-               { sshChannelEnv = (name,value) : sshChannelEnv channel
-               }
-         connectionModifyChannels (Map.insert channelId channel')
-         return True
-
-    SshChannelRequestShell ->
-      do (client, state) <- Connection ask
-         liftIO $
-           do iStream <- makeInputStream  (channelRead channel)
-              oStream <- makeOutputStream (channelWrite client state channelId channel)
-              h <- streamPairToHandle iStream oStream
-              _ <- forkIO (cOpenShell client h)
-              return True
-    SshChannelRequestExec _command        -> return False
-    SshChannelRequestSubsystem _subsystem -> return False
-
-channelRead channel =
-  atomically $
-    do buf <- readTVar (sshChannelData channel)
-       when (L.null buf) retry
-       writeTVar (sshChannelData channel) L.empty
-       return (Just (L.toStrict buf))
-
-channelWrite client state channelId channel Nothing =
-  send client state (SshMsgChannelClose channelId)
-
-channelWrite client state channelId channel (Just msg) =
-  send client state (SshMsgChannelData (sshChannelRemote channel) msg)
