@@ -303,7 +303,7 @@ putSshMsg msg =
        SshMsgUserAuthRequest         {} -> fail "unimplemented"
        SshMsgUserAuthFailure ms p       -> putUserAuthFailure ms p
        SshMsgUserAuthSuccess            -> return ()
-       SshMsgUserAuthBanner msg lang    -> putString msg >> putString lang
+       SshMsgUserAuthBanner txt lang    -> putString txt >> putString lang
        SshMsgUserAuthPkOk alg key       -> putUserAuthPkOk alg key
        SshMsgGlobalRequest           {} -> fail "unimplemented"
        SshMsgRequestSuccess          {} -> fail "unimplemented"

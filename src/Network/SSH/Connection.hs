@@ -213,7 +213,7 @@ handleRequest request channelId channel =
          return True -- TODO: inform the callback
 
 channelWrite :: Client -> SshState -> Word32 -> SshChannel -> Maybe S.ByteString -> IO ()
-channelWrite client state channelId channel Nothing =
+channelWrite client state _channelId channel Nothing =
   send client state (SshMsgChannelClose (sshChannelRemote channel))
 
 channelWrite client state channelId channel (Just msg)

@@ -15,7 +15,6 @@ module Network.SSH.Ciphers (
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Char8 as S8
 import qualified Data.ByteString.Lazy as L
-import           Data.Tagged ( witness )
 
 import           Crypto.Error
 import           Crypto.Cipher.AES

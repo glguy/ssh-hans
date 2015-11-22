@@ -13,7 +13,6 @@ import           Control.Exception
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Char8 as S8
 import qualified Data.ByteString.Lazy as L
-import           Data.Monoid ( mempty )
 import           Network
                      ( PortID(..), HostName, PortNumber, withSocketsDo, listenOn
                      , accept, Socket )
@@ -21,7 +20,6 @@ import           System.Directory ( doesFileExist )
 import           System.IO ( Handle, hClose )
 
 import System.Posix.IO ( fdToHandle, closeFd )
-import Foreign.Marshal ( allocaBytes )
 import Control.Concurrent
 import System.FilePath
 import System.Environment
@@ -93,7 +91,6 @@ mkClient creds (h,_,_) = Client { .. }
                  ) `finally` writeBytes Nothing
 
        _ <- forkIO $
-         allocaBytes 1024 $ \p ->
          let loop = do event <- readChan eventChannel
                        case event of
                          SessionClose ->
@@ -107,15 +104,20 @@ mkClient creds (h,_,_) = Client { .. }
                               loop
          in loop
 
-       let config = mempty { Vty.inputFd  = Just slaveFd
-                           , Vty.outputFd = Just slaveFd
-                           , Vty.termName = Just (S8.unpack term)
-                           }
+       let config = Vty.Config
+                      { Vty.vmin     = Just 1
+                      , Vty.vtime    = Just 100
+                      , Vty.debugLog = Nothing
+                      , Vty.inputMap = []
+                      , Vty.inputFd  = Just slaveFd
+                      , Vty.outputFd = Just slaveFd
+                      , Vty.termName = Just (S8.unpack term)
+                      }
 
        SetGame.gameMain config
        hClose masterH
 
-  cAuthHandler session_id username svc m@(SshAuthPublicKey alg key mbSig) =
+  cAuthHandler session_id username svc (SshAuthPublicKey alg key mbSig) =
     case lookup username creds of
       Just pub | pub == key ->
        case mbSig of
@@ -126,7 +128,7 @@ mkClient creds (h,_,_) = Client { .. }
            | otherwise -> return (AuthFailed ["publickey"])
       _ -> return (AuthFailed ["publickey"])
 
-  cAuthHandler session_id user svc m =
+  cAuthHandler _session_id user _svc m =
     do print (user,m)
        return (AuthFailed ["publickey"])
 

@@ -20,8 +20,6 @@ import qualified Crypto.MAC.HMAC as HMAC
 import qualified Crypto.Hash.Algorithms as Hash
 import           Data.ByteArray (convert)
 
-import Debug.Trace
-
 
 type SeqNum = Word32
 

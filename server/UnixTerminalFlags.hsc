@@ -13,24 +13,32 @@ setIx 0 x (_:ys) = x:ys
 setIx n x (y:ys) = y:setIx (n-1) x ys
 setIx _ _ []     = []
 
+setCC :: Int -> Word32 -> Termios -> Termios
 setCC ix arg termios = termios { c_cc = setIx ix (fromIntegral arg) (c_cc termios) }
 
+setInput :: Tcflag_t -> Word32 -> Termios -> Termios
 setInput _    0 termios = termios
 setInput flag _ termios = termios { c_iflag = flag .|. c_iflag termios }
 
+setLocal :: Tcflag_t -> Word32 -> Termios -> Termios
 setLocal _    0 termios = termios
 setLocal flag _ termios = termios { c_lflag = flag .|. c_lflag termios }
 
+setOutput :: Tcflag_t -> Word32 -> Termios -> Termios
 setOutput _    0 termios = termios
 setOutput flag _ termios = termios { c_oflag = flag .|. c_oflag termios }
 
+setControl :: Tcflag_t -> Word32 -> Termios -> Termios
 setControl _    0 termios = termios
 setControl flag _ termios = termios { c_cflag = flag .|. c_cflag termios }
 
+setISpeed :: Word32 -> Termios -> Termios
 setISpeed arg termios = termios { c_ispeed = fromIntegral arg }
 
+setOSpeed :: Word32 -> Termios -> Termios
 setOSpeed arg termios = termios { c_ospeed = fromIntegral arg }
 
+ignore :: Word32 -> Termios -> Termios
 ignore _ termios = termios
 
 setTerminalFlag :: TerminalFlag -> Word32 -> Termios -> Termios

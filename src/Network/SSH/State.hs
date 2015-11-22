@@ -13,6 +13,7 @@ import Data.Word
 import Data.Serialize.Get
 import Control.Concurrent
 import qualified Data.ByteString as S
+import qualified Data.ByteString.Char8 as S8
 import qualified Data.ByteString.Lazy as L
 
 
@@ -79,7 +80,7 @@ receive client SshState { .. } = loop
               writeIORef sshAuthC mac'
               case msg of
                 SshMsgIgnore _                      -> loop
-                SshMsgDebug display m _ | display   -> S.putStrLn m >> loop
+                SshMsgDebug display m _ | display   -> S8.putStrLn m >> loop
                                         | otherwise -> loop
                 _                                   -> return msg
 
