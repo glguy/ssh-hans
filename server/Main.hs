@@ -29,14 +29,16 @@ import System.Directory (getHomeDirectory)
 import qualified SetGame
 import qualified Graphics.Vty as Vty
 
+import qualified Crypto.PubKey.RSA as RSA
+
 import Openpty
 import UnixTerminalFlags
 import LoadKeys
 
 main :: IO ()
-main  = withSocketsDo $
+main = withSocketsDo $
   do sock             <- listenOn (PortNumber 2200)
-     (privKey,pubKey) <- loadKeys
+     (pubKey,privKey) <- loadKeys
 
      home       <- getHomeDirectory
      mbUserPubKey <- loadPublicKey (home </> ".ssh" </> "id_ecdsa.pub")
@@ -128,17 +130,17 @@ mkClient creds (h,_,_) = Client { .. }
     do print (user,m)
        return (AuthFailed ["publickey"])
 
-loadKeys :: IO (PrivateKey, PublicKey)
+loadKeys :: IO (RSA.PublicKey, RSA.PrivateKey)
 loadKeys  =
   do privExists <- doesFileExist "server.priv"
      pubExists  <- doesFileExist "server.pub"
 
      if privExists && pubExists
-        then do priv <- readFile "server.priv"
-                pub  <- readFile "server.pub"
-                return (read priv, read pub) -- icky
+        then do pub  <- readFile "server.pub"
+                priv <- readFile "server.priv"
+                return (read pub, read priv) -- icky
 
-        else do pair@(priv, pub) <- genKeyPair
-                writeFile "server.priv" (show priv)
+        else do pair@(pub, priv) <- RSA.generate 256{-bytes-} 0x10001{-e-}
                 writeFile "server.pub"  (show pub)
+                writeFile "server.priv" (show priv)
                 return pair

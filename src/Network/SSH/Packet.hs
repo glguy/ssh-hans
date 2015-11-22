@@ -16,7 +16,6 @@ import           Data.Serialize
                      ( Get, Put, runGet, runPut, label, isolate, remaining
                      , lookAhead, skip, getBytes, getWord8, putWord8
                      , getWord32be, putWord32be, Putter, putByteString )
-import           Data.Word ( Word32 )
 
 data SshIdent = SshIdent { sshProtoVersion
                          , sshSoftwareVersion

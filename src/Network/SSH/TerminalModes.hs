@@ -1,6 +1,5 @@
 module Network.SSH.TerminalModes where
 
-import Data.List
 import qualified Data.ByteString as S
 import Data.Serialize.Get
 import Data.Word
@@ -87,6 +86,7 @@ codeToTermFlag code =
     93   -> Just PARODD
     128  -> Just TTY_OP_ISPEED
     129  -> Just TTY_OP_OSPEED
+    _    -> Nothing
 
 
 terminalFlagToCode :: TerminalFlag -> Word8

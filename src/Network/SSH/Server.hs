@@ -10,10 +10,6 @@ module Network.SSH.Server (
   , AuthResult(..)
   , sshServer
 
-  , PrivateKey()
-  , PublicKey()
-  , genKeyPair
-
   ) where
 
 import           Network.SSH.Ciphers
@@ -25,16 +21,16 @@ import           Network.SSH.Packet
 import           Network.SSH.State
 
 import           Control.Concurrent
+import           Control.Monad (forever)
 import qualified Control.Exception as X
-import           Control.Monad.CryptoRandom ( crandomR )
-import           Crypto.Classes.Exceptions ( newGenIO, genBytes, splitGen )
-import           Crypto.Random.DRBG ( CtrDRBG )
-import           Crypto.Types.PubKey.RSA ( PublicKey(..), PrivateKey(..) )
-import           Codec.Crypto.RSA.Exceptions
-                     ( modular_exponentiation, rsassa_pkcs1_v1_5_sign, hashSHA1
-                     , HashInfo(..), generateKeyPair, generatePQ )
+import qualified Crypto.PubKey.RSA as RSA
+import qualified Crypto.PubKey.RSA.PKCS15 as RSA
+import qualified Crypto.Hash.Algorithms as Hash
+import qualified Crypto.Hash as Hash
+import qualified Crypto.PubKey.DH as DH
+import           Crypto.Random (getRandomBytes)
+import           Data.ByteArray (convert)
 import qualified Data.ByteString.Char8 as S
-import qualified Data.ByteString.Lazy as L
 import           Data.IORef
                      ( writeIORef, modifyIORef )
 import           Data.Serialize
@@ -45,36 +41,22 @@ import           Data.Serialize
 data Server = Server { sAccept :: IO Client
                      }
 
-sshServer :: SshIdent -> PrivateKey -> PublicKey -> Server -> IO ()
-sshServer ident privKey pubKey sock = loop =<< newGenIO
-  where
-  loop g = do client <- sAccept sock
-              let (g',gClient) = splitGen g
-              _ <- forkIO $
-                     do state  <- initialState
-                        result <- sayHello state ident gClient privKey pubKey client
-                        case result of
-                          Nothing -> send client state
-                                        (SshMsgDisconnect SshDiscNoMoreAuthMethodsAvailable
-                                                 "" "")
-                          Just (_user,svc) ->
-                            case svc of
-                              SshConnection -> startConnectionService client state
-                              _             -> return ()
+sshServer :: SshIdent -> RSA.PrivateKey -> RSA.PublicKey -> Server -> IO ()
+sshServer ident privKey pubKey sock = forever $
+  do client <- sAccept sock
+     forkIO $
+       do state  <- initialState
+          result <- sayHello state ident privKey pubKey client
+          case result of
+            Nothing -> send client state
+                         (SshMsgDisconnect SshDiscNoMoreAuthMethodsAvailable
+                                            "" "")
+            Just (_user,svc) ->
+              case svc of
+                SshConnection -> startConnectionService client state
+                _             -> return ()
 
-                      `X.finally` cClose client
-
-              loop g'
-
--- | Generates a 1024-bit RSA key pair.
-genKeyPair :: IO (PrivateKey, PublicKey)
-genKeyPair  =
-  do gen <- newGenIO
-     let (pub,priv,_) = generateKeyPair (gen :: CtrDRBG) 1024
-         (p,q,_)      = generatePQ gen (1024 `div` 8)
-         priv'        = priv { private_p = p, private_q = q }
-     return (priv', pub)
-
+       `X.finally` cClose client
 
 -- | Install new keys (and algorithms) into the SshState.
 transitionKeys :: Keys -> SshState -> IO ()
@@ -100,18 +82,17 @@ transitionKeys Keys { .. } SshState { .. } =
 sayHello ::
   SshState ->
   SshIdent ->
-  CtrDRBG ->
-  PrivateKey ->
-  PublicKey ->
+  RSA.PrivateKey ->
+  RSA.PublicKey ->
   Client ->
   IO (Maybe (S.ByteString, SshService))
-sayHello state ident gen priv pub client =
+sayHello state ident priv pub client =
   do cPut client (runPutLazy (putSshIdent ident))
      msg   <- parseFrom client (sshBuf state) getSshIdent
      print msg
      case msg of
        Right v_c -> do print v_c
-                       startKex gen priv pub (sshDhHash v_c ident) state client
+                       startKex priv pub (sshDhHash v_c ident) state client
        Left err  -> do print err
                        return Nothing
 
@@ -128,23 +109,21 @@ supportedKex sshCookie =
          , ..
          }
 
-newCookie :: CtrDRBG -> (SshCookie,CtrDRBG)
-newCookie g = (SshCookie bytes, g')
-  where
-  (bytes,g') = genBytes 16 g
+newCookie :: IO SshCookie
+newCookie = fmap SshCookie (getRandomBytes 16)
 
-startKex :: CtrDRBG -> PrivateKey -> PublicKey
+startKex :: RSA.PrivateKey -> RSA.PublicKey
          -> (SshKex -> SshKex -> SshPubCert -> Integer -> Integer -> Integer -> S.ByteString)
          -> SshState -> Client -> IO (Maybe (S.ByteString, SshService))
-startKex gen priv pub mkHash state client =
-  do let (cookie,gen')  = newCookie gen
-         i_s            = supportedKex cookie
+startKex priv pub mkHash state client =
+  do cookie <- newCookie
+     let i_s = supportedKex cookie
 
      send client state (SshMsgKexInit i_s)
 
      i_c <- waitForClientKex
      putStrLn "Got KexInit"
-     startDh client gen' priv pub state (mkHash i_c i_s)
+     startDh client priv pub state (mkHash i_c i_s)
   where
   waitForClientKex =
     do msg <- receive client state
@@ -153,58 +132,49 @@ startKex gen priv pub mkHash state client =
          _                 -> waitForClientKex
 
 
-data DiffieHellmanGroup = DiffieHellmanGroup {
-       dhgP    :: Integer -- ^The prime.
-     , dhgG    :: Integer -- ^The generator.
-     , dhgSize :: Int     -- ^Size in bits.
-     }
- deriving (Eq, Show)
-
 -- |Group 2 from RFC 2409
-oakley2 :: DiffieHellmanGroup
-oakley2 = DiffieHellmanGroup {
-    dhgP = 0xFFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE65381FFFFFFFFFFFFFFFF
-  , dhgG = 2
-  , dhgSize = 1024
+oakley2 :: DH.Params
+oakley2 = DH.Params
+  { DH.params_p = 0xFFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE65381FFFFFFFFFFFFFFFF
+  , DH.params_g = 2
   }
 
-group14 :: DiffieHellmanGroup
-group14 = DiffieHellmanGroup
-  { dhgP = 0xFFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3BE39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF6955817183995497CEA956AE515D2261898FA051015728E5A8AACAA68FFFFFFFFFFFFFFFF
-  , dhgG = 2
-  , dhgSize = 2048
+group14 :: DH.Params
+group14 = DH.Params
+  { DH.params_p = 0xFFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3BE39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF6955817183995497CEA956AE515D2261898FA051015728E5A8AACAA68FFFFFFFFFFFFFFFF
+  , DH.params_g = 2
   }
 
-startDh :: Client -> CtrDRBG -> PrivateKey -> PublicKey -> SshState
+startDh :: Client -> RSA.PrivateKey -> RSA.PublicKey -> SshState
         -> (SshPubCert -> Integer -> Integer -> Integer -> S.ByteString)
         -> IO (Maybe (S.ByteString, SshService))
-startDh client gen priv@PrivateKey{..} pub@PublicKey{..} state mkHash =
+startDh client priv pub state mkHash =
   do SshMsgKexDhInit e <- receive client state
      let hardcoded      = group14
-         Right (y,gen') = crandomR (1,private_q) gen
-         f              = modular_exponentiation (dhgG hardcoded) y (dhgP hardcoded)
-         k              = modular_exponentiation e y (dhgP hardcoded)
-         cert           = SshPubRsa public_e public_n
+     y <- DH.generatePrivate hardcoded
+     let DH.PublicNumber f = DH.calculatePublic hardcoded y
+         DH.SharedKey k = DH.getShared hardcoded y (DH.PublicNumber e)
+         cert           = SshPubRsa (RSA.public_e pub) (RSA.public_n pub)
          hash           = mkHash cert e f k
-         h              = hashFunction hashSHA1 (L.fromStrict hash)
-         h'             = L.toStrict h
+         h'             = convert (Hash.hashWith Hash.SHA1 hash)
 
-         sig            = rsassa_pkcs1_v1_5_sign hashSHA1 priv h
+     -- Uses IO to generate blinder
+     Right sig <-RSA.signSafer (Just Hash.SHA1) priv h'
 
-         session_id     = SshSessionId h'
-         keys           = genKeys (hashFunction hashSHA1) k h' session_id
+     let session_id     = SshSessionId h'
+         keys           = genKeys (convert . Hash.hashWith Hash.SHA1) k h' session_id
 
 
      putStrLn "Sending DH reply"
-     send client state (SshMsgKexDhReply cert f (SshSigRsa (L.toStrict sig)))
+     send client state (SshMsgKexDhReply cert f (SshSigRsa sig))
 
      putStrLn "Waiting for response"
-     getDhResponse client gen' priv pub session_id state keys
+     getDhResponse client priv pub session_id state keys
 
 
-getDhResponse :: Client -> CtrDRBG -> PrivateKey -> PublicKey -> SshSessionId
+getDhResponse :: Client -> RSA.PrivateKey -> RSA.PublicKey -> SshSessionId
               -> SshState -> Keys -> IO (Maybe (S.ByteString, SshService))
-getDhResponse client _gen _priv _pub session_id state keys =
+getDhResponse client _priv _pub session_id state keys =
   do SshMsgNewKeys <- receive client state
      send client state SshMsgNewKeys
 

@@ -19,7 +19,7 @@ data Keys = Keys { kInitialIV :: !KeyPair
                  , kIntegKey  :: !KeyPair
                  } deriving (Show)
 
-genKeys :: (L.ByteString -> L.ByteString)
+genKeys :: (S.ByteString -> S.ByteString)
         -> Integer -> S.ByteString -> SshSessionId
         -> Keys
 genKeys hash k h session_id =
@@ -40,7 +40,7 @@ genKeys hash k h session_id =
 
 -- | Generate an initial key stream.  Note, that the returned lazy bytestring is
 -- an infinite list of chunks, so just take as much as is necessary.
-genKey :: (L.ByteString -> L.ByteString)
+genKey :: (S.ByteString -> S.ByteString)
        -> Integer -> S.ByteString -> SshSessionId
        -> S.ByteString -> L.ByteString
 genKey hash k h (SshSessionId session_id) = \ x ->
@@ -48,8 +48,8 @@ genKey hash k h (SshSessionId session_id) = \ x ->
    in k_1 `L.append` chunks k_1
   where
 
-  kh            = L.fromStrict (runPut (putMpInt k >> putByteString h))
-  chunk k_prev  = hash (kh `L.append` k_prev)
+  kh            = runPut (putMpInt k >> putByteString h)
+  chunk k_prev  = L.fromStrict (hash (kh `S.append` L.toStrict k_prev))
 
   chunks k_prev = k_n `L.append` chunks (k_prev `L.append` k_n)
     where
