@@ -11,9 +11,7 @@ import           Network.SSH.UserAuth
 import           Control.Monad ( forever )
 import           Control.Exception
 import qualified Data.ByteString as S
-import qualified Data.ByteString.Internal as S
 import qualified Data.ByteString.Char8 as S8
-import qualified Data.ByteString.Unsafe as S
 import qualified Data.ByteString.Lazy as L
 import           Data.Monoid ( mempty )
 import           Network
@@ -23,12 +21,11 @@ import           System.Directory ( doesFileExist )
 import           System.IO ( Handle, hClose )
 
 import System.Posix.IO ( fdToHandle, closeFd )
-import Foreign.Marshal ( allocaBytes, copyArray )
-import Foreign.Ptr ( castPtr )
+import Foreign.Marshal ( allocaBytes )
 import Control.Concurrent
-import System.Directory
 import System.FilePath
 import System.Environment
+import System.Directory (getHomeDirectory)
 import qualified SetGame
 import qualified Graphics.Vty as Vty
 
@@ -42,7 +39,7 @@ main  = withSocketsDo $
      (privKey,pubKey) <- loadKeys
 
      home       <- getHomeDirectory
-     mbUserPubKey <- loadPublicKey (home </> ".ssh" </> "id_ed25519.pub")
+     mbUserPubKey <- loadPublicKey (home </> ".ssh" </> "id_ecdsa.pub")
      userPubKey <- case mbUserPubKey of
                      Left e -> fail ("bad public key: " ++ e)
                      Right x -> return x

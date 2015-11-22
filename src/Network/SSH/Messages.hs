@@ -207,6 +207,7 @@ data SshKex = SshKex { sshCookie            :: !SshCookie
 
 data SshPubCert = SshPubDss !Integer !Integer !Integer !Integer
                 | SshPubRsa !Integer !Integer
+                | SshPubEcDsaP256 !S.ByteString
                 | SshPubEd25519 !S.ByteString
                 | SshPubOther !S.ByteString !S.ByteString
                   deriving (Show,Eq)
@@ -214,11 +215,13 @@ data SshPubCert = SshPubDss !Integer !Integer !Integer !Integer
 sshPubCertName :: SshPubCert -> S.ByteString
 sshPubCertName SshPubDss {}      = "ssh-dss"
 sshPubCertName SshPubRsa {}      = "ssh-rsa"
+sshPubCertName SshPubEcDsaP256 {} = "ecdsa-sha2-nistp256"
 sshPubCertName SshPubEd25519 {}  = "ssh-ed25519"
 sshPubCertName (SshPubOther n _) = n
 
 data SshSig = SshSigDss !Integer !Integer
             | SshSigRsa !S.ByteString
+            | SshSigEcDsaP256 !S.ByteString
             | SshSigEd25519 !S.ByteString
             | SshSigOther S.ByteString S.ByteString
               deriving (Show,Eq)
@@ -363,6 +366,11 @@ putSshPubCert (SshPubRsa e n) =
      putMpInt e
      putMpInt n
 
+putSshPubCert (SshPubEcDsaP256 str) =
+  do putString "ecdsa-sha2-nistp256"
+     putString "nistp256"
+     putString str
+
 putSshPubCert (SshPubEd25519 str) =
   do putString "ssh-ed25519"
      putString str
@@ -381,6 +389,10 @@ putSshSig (SshSigDss r s) =
 
 putSshSig (SshSigRsa s) =
   do putString "ssh-rsa"
+     putString s
+
+putSshSig (SshSigEcDsaP256 s) =
+  do putString "ecdsa-sha2-nistp256"
      putString s
 
 putSshSig (SshSigEd25519 s) =
@@ -591,6 +603,11 @@ getSshPubCert  = label "SshPubCert" $
             n         <- getMpInt
             return (SshPubRsa e n)
 
+       "ecdsa-sha2-nistp256" ->
+         do "nistp256" <- getString
+            str <- getString
+            return (SshPubEcDsaP256 str)
+
        "ssh-ed25519" ->
          do str <- getString
             return (SshPubEd25519 str)
@@ -611,6 +628,10 @@ getSshSig  = label "SshSig" $
        "ssh-rsa" ->
          do s <- getString
             return (SshSigRsa s)
+
+       "ecdsa-sha2-nistp256" ->
+         do s <- getString
+            return (SshSigEcDsaP256 s)
 
        "ssh-ed25519" ->
          do s <- getString

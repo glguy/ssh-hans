@@ -11,12 +11,14 @@ module Network.SSH.Mac (
   , mac_hmac_sha1
   ) where
 
-import           Crypto.HMAC ( MacKey(..), hmac' )
-import           Crypto.Hash.CryptoAPI ( CTXSHA1, SHA1 )
 import qualified Data.ByteString.Char8 as S
 import qualified Data.ByteString.Lazy as L
-import           Data.Serialize ( encode, runPut, putWord32be, putByteString )
+import           Data.Serialize ( runPut, putWord32be, putByteString )
 import           Data.Word ( Word32 )
+
+import qualified Crypto.MAC.HMAC as HMAC
+import qualified Crypto.Hash.Algorithms as Hash
+import           Data.ByteArray (convert)
 
 import Debug.Trace
 
@@ -56,8 +58,8 @@ mac_hmac_sha1 :: L.ByteString -> Mac
 mac_hmac_sha1 keyBytes =
   Mac { mName       = "hmac-sha1"
       , mNextSeqNum = 0
-      , mFunction   = encode . hmac' key
+      , mFunction   = convert . mac
       }
   where
-  key :: MacKey CTXSHA1 SHA1
-  key  = MacKey (L.toStrict (L.take 20 keyBytes))
+  mac :: S.ByteString -> HMAC.HMAC Hash.SHA1
+  mac = HMAC.hmac (L.toStrict (L.take 20 keyBytes))

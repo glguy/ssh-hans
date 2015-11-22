@@ -1,14 +1,21 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Network.SSH.UserAuth where
 
+import Control.Applicative (liftA2)
 import Network.SSH.Messages
 import Network.SSH.Protocol
-import Data.Serialize ( runPut )
-import qualified Codec.Crypto.RSA.Pure as RSA
-import qualified Crypto.Types.PubKey.RSA as RSA
+import Data.Serialize ( runGet, runPut )
 import qualified Data.ByteString as S
-import qualified Data.ByteString.Lazy as L
-import qualified Crypto.Sign.Ed25519 as Ed25519
+
+import qualified Crypto.PubKey.Ed25519 as Ed25519
+import qualified Crypto.PubKey.RSA as RSA
+import qualified Crypto.PubKey.RSA.PKCS15 as RSA
+import qualified Crypto.PubKey.ECC.ECDSA as ECC
+import qualified Crypto.PubKey.ECC.P256 as ECC
+import qualified Crypto.PubKey.ECC.Types as ECC
+import qualified Crypto.Hash.Algorithms as Hash
+import Crypto.Error
+
 
 verifyPubKeyAuthentication ::
   SshSessionId {- ^ session ID           -} ->
@@ -21,20 +28,27 @@ verifyPubKeyAuthentication ::
 verifyPubKeyAuthentication
   sessionId username service publicKeyAlgorithm publicKey signature =
     case (publicKeyAlgorithm, publicKey, signature) of
+
       ("ssh-rsa", SshPubRsa e n, SshSigRsa s) ->
-         case rsaVerify
-                (RSA.PublicKey (S.length s) n e)
-                (L.fromStrict token)
-                (L.fromStrict s) of
-           Right r -> r
-           Left  _ -> False
+        RSA.verify (Just Hash.SHA1) (RSA.PublicKey (S.length s) n e) token s
+
+      ("ecdsa-sha2-nistp256", SshPubEcDsaP256 pub, SshSigEcDsaP256 sig) ->
+        do p <- nistp256PubFromBinary pub
+           s <- eccSigFromBinary sig
+           return (ECC.verify Hash.SHA256 p s token)
+        `catchCryptoFailure` \_ ->
+           False
+
       ("ssh-ed25519", SshPubEd25519 pub, SshSigEd25519 sig) ->
-           Ed25519.dverify (Ed25519.PublicKey pub) token (Ed25519.Signature sig)
+        do p <- Ed25519.publicKey pub
+           s <- Ed25519.signature sig
+           return (Ed25519.verify p token s)
+        `catchCryptoFailure` \_ ->
+           False
+
       _ -> False
 
   where
-  rsaVerify = RSA.rsassa_pkcs1_v1_5_verify RSA.hashSHA1
-
   token = runPut $
     do putSessionId  sessionId
        putSshMsgTag  SshMsgTagUserAuthRequest
@@ -44,3 +58,21 @@ verifyPubKeyAuthentication
        putBoolean    True
        putString     publicKeyAlgorithm
        putString     (runPut (putSshPubCert publicKey))
+
+catchCryptoFailure :: CryptoFailable a -> (CryptoError -> a) -> a
+catchCryptoFailure m h = onCryptoFailure h id m
+
+nistp256PubFromBinary :: S.ByteString -> CryptoFailable ECC.PublicKey
+nistp256PubFromBinary bs =
+  case S.uncons bs of
+    Just (4, bs1) -> -- we don't support compression at this point
+      do p <- ECC.pointFromBinary bs1
+         let (x,y) = ECC.pointToIntegers p
+         return (ECC.PublicKey (ECC.getCurveByName ECC.SEC_p256r1) (ECC.Point x y))
+    _ -> CryptoFailed CryptoError_PublicKeySizeInvalid
+
+eccSigFromBinary :: S.ByteString -> CryptoFailable ECC.Signature
+eccSigFromBinary bs =
+  case runGet (liftA2 ECC.Signature getMpInt getMpInt) bs of
+    Left _ -> CryptoFailed CryptoError_SecretKeyStructureInvalid
+    Right s -> CryptoPassed s
