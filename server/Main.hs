@@ -26,17 +26,30 @@ import System.Posix.IO ( fdToHandle, closeFd )
 import Foreign.Marshal ( allocaBytes, copyArray )
 import Foreign.Ptr ( castPtr )
 import Control.Concurrent
+import System.Directory
+import System.FilePath
+import System.Environment
 import qualified SetGame
 import qualified Graphics.Vty as Vty
 
 import Openpty
 import UnixTerminalFlags
+import LoadKeys
 
 main :: IO ()
 main  = withSocketsDo $
   do sock             <- listenOn (PortNumber 2200)
      (privKey,pubKey) <- loadKeys
-     sshServer greeting privKey pubKey (mkServer sock)
+
+     home       <- getHomeDirectory
+     mbUserPubKey <- loadPublicKey (home </> ".ssh" </> "id_ed25519.pub")
+     userPubKey <- case mbUserPubKey of
+                     Left e -> fail ("bad public key: " ++ e)
+                     Right x -> return x
+     user <- getEnv "USER"
+     let creds = [(S8.pack user,userPubKey)]
+
+     sshServer greeting privKey pubKey (mkServer creds sock)
 
 greeting :: SshIdent
 greeting  = SshIdent { sshProtoVersion    = "2.0"
@@ -44,14 +57,8 @@ greeting  = SshIdent { sshProtoVersion    = "2.0"
                      , sshComments        = ""
                      }
 
-mkServer :: Socket -> Server
-mkServer sock = Server { sAccept = mkClient `fmap` accept sock }
-
-emertensPubKey :: SshPubCert
-emertensPubKey = SshPubRsa 35 25964490825869075456565315133613317015447736312131943669147612582029667946390134690084191987178033741047563824733221539952301173273051428643220871796453385502898146359379719478551566688165035231983895105682618937491831593971117244228476342572694601313183083372271655715242683226812033451044535273348848480673566791362842116607512585910646275323110393347168283422197812019692748590078493496117117347928046812539242074979883110348355966101089844487555867800780964100942711053618711644364210937596442391371529191584180796637895359042645640245619260247615859656368255762806020068608941320426880648559264824762770390985131
-
-credentials :: [(S.ByteString, SshPubCert)]
-credentials = [("emertens", emertensPubKey)]
+mkServer :: Credentials -> Socket -> Server
+mkServer creds sock = Server { sAccept = mkClient creds `fmap` accept sock }
 
 convertWindowSize :: SshWindowSize -> Winsize
 convertWindowSize winsize =
@@ -62,8 +69,10 @@ convertWindowSize winsize =
     , wsYPixel = fromIntegral $ sshWsY    winsize
     }
 
-mkClient :: (Handle,HostName,PortNumber) -> Client
-mkClient (h,_,_) = Client { .. }
+type Credentials = [(S.ByteString, SshPubCert)]
+
+mkClient :: Credentials -> (Handle,HostName,PortNumber) -> Client
+mkClient creds (h,_,_) = Client { .. }
   where
   cGet   = S.hGetSome h
   cPut   = L.hPutStr  h
@@ -108,7 +117,7 @@ mkClient (h,_,_) = Client { .. }
        hClose masterH
 
   cAuthHandler session_id username svc m@(SshAuthPublicKey alg key mbSig) =
-    case lookup username credentials of
+    case lookup username creds of
       Just pub | pub == key ->
        case mbSig of
          Nothing -> return (AuthPkOk alg key)

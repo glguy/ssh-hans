@@ -8,6 +8,7 @@ import qualified Codec.Crypto.RSA.Pure as RSA
 import qualified Crypto.Types.PubKey.RSA as RSA
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Lazy as L
+import qualified Crypto.Sign.Ed25519 as Ed25519
 
 verifyPubKeyAuthentication ::
   SshSessionId {- ^ session ID           -} ->
@@ -27,6 +28,8 @@ verifyPubKeyAuthentication
                 (L.fromStrict s) of
            Right r -> r
            Left  _ -> False
+      ("ssh-ed25519", SshPubEd25519 pub, SshSigEd25519 sig) ->
+           Ed25519.dverify (Ed25519.PublicKey pub) token (Ed25519.Signature sig)
       _ -> False
 
   where

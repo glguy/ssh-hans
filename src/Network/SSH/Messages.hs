@@ -207,16 +207,19 @@ data SshKex = SshKex { sshCookie            :: !SshCookie
 
 data SshPubCert = SshPubDss !Integer !Integer !Integer !Integer
                 | SshPubRsa !Integer !Integer
+                | SshPubEd25519 !S.ByteString
                 | SshPubOther !S.ByteString !S.ByteString
                   deriving (Show,Eq)
 
 sshPubCertName :: SshPubCert -> S.ByteString
 sshPubCertName SshPubDss {}      = "ssh-dss"
 sshPubCertName SshPubRsa {}      = "ssh-rsa"
+sshPubCertName SshPubEd25519 {}  = "ssh-ed25519"
 sshPubCertName (SshPubOther n _) = n
 
 data SshSig = SshSigDss !Integer !Integer
             | SshSigRsa !S.ByteString
+            | SshSigEd25519 !S.ByteString
             | SshSigOther S.ByteString S.ByteString
               deriving (Show,Eq)
 
@@ -360,6 +363,10 @@ putSshPubCert (SshPubRsa e n) =
      putMpInt e
      putMpInt n
 
+putSshPubCert (SshPubEd25519 str) =
+  do putString "ssh-ed25519"
+     putString str
+
 putSshPubCert (SshPubOther name bytes) =
   do putString name
      putByteString bytes
@@ -374,6 +381,10 @@ putSshSig (SshSigDss r s) =
 
 putSshSig (SshSigRsa s) =
   do putString "ssh-rsa"
+     putString s
+
+putSshSig (SshSigEd25519 s) =
+  do putString "ssh-ed25519"
      putString s
 
 putSshSig (SshSigOther name bytes) =
@@ -580,6 +591,10 @@ getSshPubCert  = label "SshPubCert" $
             n         <- getMpInt
             return (SshPubRsa e n)
 
+       "ssh-ed25519" ->
+         do str <- getString
+            return (SshPubEd25519 str)
+
        _ ->
          do bytes <- getBytes =<< remaining
             return (SshPubOther name bytes)
@@ -596,6 +611,10 @@ getSshSig  = label "SshSig" $
        "ssh-rsa" ->
          do s <- getString
             return (SshSigRsa s)
+
+       "ssh-ed25519" ->
+         do s <- getString
+            return (SshSigEd25519 s)
 
        _ ->
          do bytes <- getBytes =<< remaining

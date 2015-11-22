@@ -1,6 +1,8 @@
 dist/
 .cabal-sandbox/
 cabal.sandbox.config
-
+.*.swp
 server.priv
 server.pub
+/stack.yaml
+.stack-work
