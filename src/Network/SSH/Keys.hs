@@ -8,9 +8,10 @@ import           Network.SSH.Protocol ( getString, getMpInt, putMpInt, putString
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Lazy as L
 import           Data.Serialize ( runGet, runPut )
-import           Data.Monoid ((<>))
 
+import           Crypto.Random
 import           Crypto.Error
+import qualified Crypto.PubKey.Curve25519 as C25519
 import qualified Crypto.PubKey.DH as DH
 import qualified Crypto.PubKey.ECC.DH as ECDH
 import qualified Crypto.PubKey.ECC.Types as ECC
@@ -200,3 +201,43 @@ bytesToInteger = S.foldl' (\acc x -> acc*256 + fromIntegral x) 0
 
 curveSizeBytes :: ECC.Curve -> Int
 curveSizeBytes curve = (ECC.curveSizeBits curve + 7) `div` 8
+
+------------------------------------------------------------------------
+
+curve25519sha256 :: Kex
+curve25519sha256 = Kex
+  { kexName = "curve25519-sha256@libssh.org"
+  , kexRun  = runCurve25519dh
+  , kexHash = convert . Hash.hashWith Hash.SHA256
+  }
+
+-- | Implements key exchange as defined by
+-- curve25519-sha256@libssh.org.txt
+runCurve25519dh ::
+  S.ByteString                    {- ^ client public -} ->
+  IO (S.ByteString, S.ByteString) {- ^ server public, shared key -}
+runCurve25519dh raw_pub_c =
+
+     -- Section 2: Transmit public key as "string"
+  do pub_bytes_c <- case runGet getString raw_pub_c of
+                      Left _       -> fail "bad client public point 1"
+                      Right pub_bytes -> return pub_bytes
+
+     -- fails if key isn't 32 bytes long
+     pub_c <- case C25519.publicKey pub_bytes_c of
+                CryptoFailed _     -> fail "bad client public point 2"
+                CryptoPassed pub_c -> return pub_c
+
+     -- fails if key isn't 32 bytes long
+     CryptoPassed priv <- fmap C25519.secretKey
+                               (getRandomBytes 32 :: IO S.ByteString)
+
+         -- Section 2: Transmit public key as "string"
+     let raw_pub_s  = runPut $ putString $ convert
+                    $ C25519.toPublic priv
+
+         -- Section 4.3: Treat shared key bytes as "integer"
+         raw_secret = runPut $ putMpInt $ bytesToInteger $ convert
+                    $ C25519.dh pub_c priv
+
+     return (raw_pub_s, raw_secret)
