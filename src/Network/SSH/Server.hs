@@ -43,12 +43,23 @@ sshServer v_s kex privKey pubKey sock = forever $
   do client <- sAccept sock
 
      forkIO $
-       do state      <- initialState
-          v_c        <- sayHello state client v_s
-          (i_s, i_c) <- startKex state client kex
-          sessionId  <- startDh client privKey pubKey state kex (sshDhHash v_c v_s i_c i_s)
-          result     <- handleAuthentication state client sessionId
+       do state             <- initialState
+          v_c               <- sayHello state client v_s
+          (i_s, i_c)        <- startKex state client kex
+          (pub_c, pub_s, k) <- startDh client state kex
 
+          let makeToken cert = kexHash kex
+                             $ sshDhHash v_c v_s i_c i_s cert pub_c pub_s k
+
+          (sig, cert, token) <- rsaAuthentication pubKey privKey makeToken
+
+          finishDh client state sig cert pub_s
+
+          installSecurity client state kex token k
+
+          -- Connection established!
+
+          result <- handleAuthentication state client (SshSessionId token)
           case result of
             Nothing -> send client state
                          (SshMsgDisconnect SshDiscNoMoreAuthMethodsAvailable
@@ -59,6 +70,18 @@ sshServer v_s kex privKey pubKey sock = forever $
                 _             -> return ()
 
        `X.finally` cClose client
+
+rsaAuthentication ::
+  RSA.PublicKey ->
+  RSA.PrivateKey ->
+  (SshPubCert -> S.ByteString) ->
+  IO (SshSig, SshPubCert, S.ByteString)
+rsaAuthentication pubKey privKey makeToken =
+  do -- Extracted authentication step
+     let cert  = SshPubRsa (RSA.public_e pubKey) (RSA.public_n pubKey)
+         token = makeToken cert
+     Right rawsig <- RSA.signSafer (Just Hash.SHA1) privKey token
+     return (SshSigRsa rawsig, cert, token)
 
 -- | Install new keys (and algorithms) into the SshState.
 transitionKeys :: Keys -> SshState -> IO ()
@@ -124,34 +147,35 @@ startKex state client kex =
          SshMsgKexInit i_c -> return i_c
          _                 -> waitForClientKex -- XXX What can go here?
 
-startDh :: Client -> RSA.PrivateKey -> RSA.PublicKey -> SshState
-        -> Kex
-        -> (SshPubCert -> S.ByteString -> S.ByteString -> S.ByteString -> S.ByteString)
-        -> IO SshSessionId
-startDh client priv pub state kex mkToken =
+startDh :: Client -> SshState -> Kex
+        -> IO (S.ByteString, S.ByteString, S.ByteString)
+           {- ^ client public, server public, shared secret -}
+startDh client state kex =
   do SshMsgKexDhInit pub_c <- receive client state
-
      (pub_s, k) <- kexRun kex pub_c
+     return (pub_c, pub_s, k)
 
-     let cert           = SshPubRsa (RSA.public_e pub) (RSA.public_n pub)
-         token          = mkToken cert pub_c pub_s k
-         h              = kexHash kex token
-         session_id     = SshSessionId h
-         keys           = genKeys (kexHash kex) k h session_id
+finishDh ::
+  Client -> SshState ->
+  SshSig -> SshPubCert ->
+  S.ByteString {- ^ public dh -} ->
+  IO ()
+finishDh client state sig cert pub_s =
+  do putStrLn "Sending DH reply"
+     send client state (SshMsgKexDhReply cert pub_s sig)
 
-     -- Uses IO to generate blinder
-     Right sig <- RSA.signSafer (Just Hash.SHA1) priv h
 
-     putStrLn "Sending DH reply"
-     send client state (SshMsgKexDhReply cert pub_s (SshSigRsa sig))
-
-     putStrLn "Waiting for response"
+installSecurity ::
+  Client -> SshState -> Kex ->
+  S.ByteString {- ^ sign this -} ->
+  S.ByteString {- ^ shared secret -} ->
+  IO ()
+installSecurity client state kex token k =
+  do putStrLn "Waiting for response"
      SshMsgNewKeys <- receive client state
      send client state SshMsgNewKeys
+     let keys = genKeys (kexHash kex) k token
      transitionKeys keys state
-     return session_id
-
-
 
 
 handleAuthentication ::
