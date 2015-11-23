@@ -38,14 +38,15 @@ import           Data.Serialize
 data Server = Server { sAccept :: IO Client
                      }
 
-sshServer :: SshIdent -> RSA.PrivateKey -> RSA.PublicKey -> Server -> IO ()
-sshServer v_s privKey pubKey sock = forever $
+sshServer :: SshIdent -> Kex -> RSA.PrivateKey -> RSA.PublicKey -> Server -> IO ()
+sshServer v_s kex privKey pubKey sock = forever $
   do client <- sAccept sock
+
      forkIO $
        do state      <- initialState
           v_c        <- sayHello state client v_s
-          (i_s, i_c) <- startKex state client
-          sessionId  <- startDh client privKey pubKey state (sshDhHash v_c v_s i_c i_s)
+          (i_s, i_c) <- startKex state client kex
+          sessionId  <- startDh client privKey pubKey state kex (sshDhHash v_c v_s i_c i_s)
           result     <- handleAuthentication state client sessionId
 
           case result of
@@ -90,8 +91,8 @@ sayHello state client v_s =
        Left err  -> fail err
 
 
-supportedKex :: SshCookie -> SshKex
-supportedKex cookie =
+supportedKex :: Kex -> SshCookie -> SshKex
+supportedKex kex cookie =
   SshKex
     { sshKexAlgs           = [ kexName kex ]
     , sshServerHostKeyAlgs = [ "ssh-rsa" ]
@@ -106,10 +107,10 @@ supportedKex cookie =
 newCookie :: IO SshCookie
 newCookie = fmap SshCookie (getRandomBytes 16)
 
-startKex :: SshState -> Client -> IO (SshKex, SshKex)
-startKex state client =
+startKex :: SshState -> Client -> Kex -> IO (SshKex, SshKex)
+startKex state client kex =
   do cookie <- newCookie
-     let i_s = supportedKex cookie
+     let i_s = supportedKex kex cookie
 
      send client state (SshMsgKexInit i_s)
 
@@ -123,15 +124,11 @@ startKex state client =
          SshMsgKexInit i_c -> return i_c
          _                 -> waitForClientKex -- XXX What can go here?
 
--- Currently hardcoded kex algorithm
-kex :: Kex
-kex = ecdhSha2Nistp256
--- kex = diffieHellmanGroup14Sha1
-
 startDh :: Client -> RSA.PrivateKey -> RSA.PublicKey -> SshState
+        -> Kex
         -> (SshPubCert -> S.ByteString -> S.ByteString -> S.ByteString -> S.ByteString)
         -> IO SshSessionId
-startDh client priv pub state mkToken =
+startDh client priv pub state kex mkToken =
   do SshMsgKexDhInit pub_c <- receive client state
 
      (pub_s, k) <- kexRun kex pub_c

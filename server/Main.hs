@@ -3,9 +3,10 @@
 
 module Main where
 
+import           Network.SSH.Keys
+import           Network.SSH.Messages
 import           Network.SSH.Packet ( SshIdent(..) )
 import           Network.SSH.Server
-import           Network.SSH.Messages
 import           Network.SSH.UserAuth
 
 import           Control.Monad ( forever )
@@ -43,7 +44,11 @@ main = withSocketsDo $
      user    <- getEnv "USER"
      let creds = [(S8.pack user,pubKeys)]
 
-     sshServer greeting privKey pubKey (mkServer creds sock)
+     -- Currently hardcoded kex algorithm
+     let kex = ecdhSha2Nistp256
+     -- let kex = diffieHellmanGroup14Sha1
+
+     sshServer greeting kex privKey pubKey (mkServer creds sock)
 
 greeting :: SshIdent
 greeting  = SshIdent { sshProtoVersion    = "2.0"
