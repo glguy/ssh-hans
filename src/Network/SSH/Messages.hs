@@ -64,16 +64,16 @@ data SshMsg = SshMsgDisconnect SshDiscReason !S.ByteString !S.ByteString
                  !SshPubCert   -- key blob
             | SshMsgUserAuthSuccess
             | SshMsgUserAuthBanner !S.ByteString !S.ByteString
-            | SshMsgGlobalRequest
-            | SshMsgRequestSuccess
+            | SshMsgGlobalRequest !S.ByteString !Bool !S.ByteString
+            | SshMsgRequestSuccess !S.ByteString
             | SshMsgRequestFailure
             | SshMsgChannelOpen !SshChannelType !Word32 !Word32 !Word32
             | SshMsgChannelOpenConfirmation !Word32 !Word32 !Word32 !Word32
             | SshMsgChannelOpenFailure !Word32 !SshOpenFailure !S.ByteString !S.ByteString
             | SshMsgChannelWindowAdjust !Word32 !Word32
             | SshMsgChannelData !Word32 !S.ByteString
-            | SshMsgChannelExtendedData
-            | SshMsgChannelEof
+            | SshMsgChannelExtendedData !Word32 !Word32 !S.ByteString
+            | SshMsgChannelEof !Word32
             | SshMsgChannelClose !Word32
             | SshMsgChannelRequest !SshChannelRequest !Word32 !Bool
             | SshMsgChannelSuccess !Word32
@@ -305,9 +305,10 @@ putSshMsg msg =
        SshMsgUserAuthSuccess            -> return ()
        SshMsgUserAuthBanner txt lang    -> putString txt >> putString lang
        SshMsgUserAuthPkOk alg key       -> putUserAuthPkOk alg key
-       SshMsgGlobalRequest           {} -> fail "unimplemented"
-       SshMsgRequestSuccess          {} -> fail "unimplemented"
-       SshMsgRequestFailure          {} -> fail "unimplemented"
+       SshMsgGlobalRequest name reply bytes -> putString name >> putBoolean reply >> putByteString bytes
+                                                                                -- response specific data
+       SshMsgRequestSuccess bytes       -> putByteString bytes -- response specific data
+       SshMsgRequestFailure             -> return ()
        SshMsgChannelOpen             {} -> fail "unimplemented"
        SshMsgChannelOpenConfirmation chan1 chan2 win maxPack -> putWord32be chan1 >> putWord32be chan2 >>
                                                                 putWord32be win   >> putWord32be maxPack
@@ -315,8 +316,8 @@ putSshMsg msg =
                                            putString d   >> putString l
        SshMsgChannelWindowAdjust chan adj -> putWord32be chan >> putWord32be adj
        SshMsgChannelData chan bytes     -> putWord32be chan >> putString bytes
-       SshMsgChannelExtendedData     {} -> fail "unimplemented"
-       SshMsgChannelEof              {} -> fail "unimplemented"
+       SshMsgChannelExtendedData chan code bytes -> putWord32be chan >> putWord32be code >> putString bytes
+       SshMsgChannelEof chan            -> putWord32be chan
        SshMsgChannelClose chan          -> putWord32be chan
        SshMsgChannelRequest          {} -> fail "unimplemented"
        SshMsgChannelSuccess chan        -> putWord32be chan
@@ -508,19 +509,21 @@ getSshMsg  =
        SshMsgTagUserAuthSuccess         -> return SshMsgUserAuthSuccess
        SshMsgTagUserAuthBanner          -> SshMsgUserAuthBanner <$> getString <*> getString
        SshMsgTagUserAuthPkOk            -> getUserAuthPkOk
-       SshMsgTagGlobalRequest           -> fail (show tag ++ ": not implemented")
-       SshMsgTagRequestSuccess          -> fail (show tag ++ ": not implemented")
-       SshMsgTagRequestFailure          -> fail (show tag ++ ": not implemented")
+       SshMsgTagGlobalRequest           -> SshMsgGlobalRequest <$> getString <*> getBoolean <*> getRemaining
+       SshMsgTagRequestSuccess          -> SshMsgRequestSuccess <$> getRemaining
+       SshMsgTagRequestFailure          -> return SshMsgRequestFailure
        SshMsgTagChannelOpen             -> getChannelOpen
-       SshMsgTagChannelOpenConfirmation -> fail (show tag ++ ": not implemented")
+       SshMsgTagChannelOpenConfirmation -> SshMsgChannelOpenConfirmation
+                                                <$> getWord32be <*> getWord32be
+                                                <*> getWord32be <*> getWord32be
        SshMsgTagChannelOpenFailure      -> SshMsgChannelOpenFailure
                                                 <$> getWord32be <*> getOpenFailure
                                                 <*> getString   <*> getString
        SshMsgTagChannelWindowAdjust     -> SshMsgChannelWindowAdjust
                                                 <$> getWord32be <*> getWord32be
        SshMsgTagChannelData             -> SshMsgChannelData <$> getWord32be <*> getString
-       SshMsgTagChannelExtendedData     -> fail (show tag ++ ": not implemented")
-       SshMsgTagChannelEof              -> fail (show tag ++ ": not implemented")
+       SshMsgTagChannelExtendedData     -> SshMsgChannelExtendedData <$> getWord32be <*> getWord32be <*> getString
+       SshMsgTagChannelEof              -> SshMsgChannelEof <$> getWord32be
        SshMsgTagChannelClose            -> SshMsgChannelClose <$> getWord32be
        SshMsgTagChannelRequest          -> getChannelRequest
        SshMsgTagChannelSuccess          -> SshMsgChannelSuccess <$> getWord32be
@@ -813,3 +816,6 @@ getOpenFailure =
      case codeToOpenFailure code of
        Just tag -> return tag
        Nothing  -> fail "Unknown Channel Open Failure type"
+
+getRemaining :: Get S.ByteString
+getRemaining = getBytes =<< remaining

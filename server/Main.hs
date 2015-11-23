@@ -123,8 +123,8 @@ mkClient creds (h,_,_) = Client { .. }
       Just pubs
         | key `elem` pubs
         , verifyPubKeyAuthentication session_id username svc alg key sig
-        -> print "good" >> print key >> return AuthAccepted
-      _ -> print "bad" >> print key >> return (AuthFailed ["publickey"])
+        -> return AuthAccepted
+      _ -> return (AuthFailed ["publickey"])
 
   cAuthHandler _session_id user _svc m =
     do print (user,m)
