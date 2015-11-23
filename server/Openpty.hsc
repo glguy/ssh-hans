@@ -1,14 +1,7 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
 
--- Import @openpty@.
-#ifdef __APPLE__
-#include <util.h>
-#elif __linux__
-#include <pty.h>
-#else
-#error "Can't find openpty"
-#endif
-
+#include <sys/ioctl.h>
+#include <termios.h>
 #include <unistd.h>
 
 module Openpty where
