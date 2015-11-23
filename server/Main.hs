@@ -45,8 +45,9 @@ main = withSocketsDo $
      let creds = [(S8.pack user,pubKeys)]
 
      -- Currently hardcoded kex algorithm
-     let kex = ecdhSha2Nistp256
+     -- let kex = ecdhSha2Nistp521
      -- let kex = diffieHellmanGroup14Sha1
+     let kex = curve25519sha256
 
      sshServer greeting kex privKey pubKey (mkServer creds sock)
 
@@ -95,9 +96,7 @@ mkClient creds (h,_,_) = Client { .. }
        _ <- forkIO $
          let loop = do event <- readChan eventChannel
                        case event of
-                         SessionClose ->
-                           do closeFd masterFd
-                              closeFd slaveFd
+                         SessionClose -> closeFd slaveFd
                          SessionWinsize winsize' ->
                            do changePtyWinsize masterFd (convertWindowSize winsize')
                               loop
