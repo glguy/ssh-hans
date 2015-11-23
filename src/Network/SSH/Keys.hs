@@ -13,8 +13,8 @@ import           Data.Monoid ((<>))
 import           Crypto.Error
 import qualified Crypto.PubKey.DH as DH
 import qualified Crypto.PubKey.ECC.DH as ECDH
-import qualified Crypto.PubKey.ECC.Types as ECDH
-import qualified Crypto.PubKey.ECC.P256 as P256
+import qualified Crypto.PubKey.ECC.Types as ECC
+import qualified Crypto.PubKey.ECC.Prim as ECC
 import qualified Crypto.Hash.Algorithms as Hash
 import qualified Crypto.Hash as Hash
 import           Data.ByteArray (convert)
@@ -88,7 +88,7 @@ diffieHellmanGroup14Sha1 = Kex
 ecdhSha2Nistp256 :: Kex
 ecdhSha2Nistp256 = Kex
   { kexName = "ecdh-sha2-nistp256"
-  , kexRun  = runEcdhP256
+  , kexRun  = runEcdh (ECC.getCurveByName ECC.SEC_p256r1)
   , kexHash = convert . Hash.hashWith Hash.SHA256
   }
 
@@ -118,32 +118,71 @@ group14 = DH.Params
   , DH.params_g = 2
   }
 
-runEcdhP256 ::
+runEcdh ::
+  ECC.Curve ->
   S.ByteString                    {- ^ encoded client public value -} ->
   IO (S.ByteString, S.ByteString) {- ^ server public value, shared secret -}
-runEcdhP256 raw_pub_c =
+runEcdh curve raw_pub_c =
+
   do pub_c <- case runGet getString raw_pub_c of
                 Left _ -> fail "bad client public point 1"
                 Right raw_pub_c1 ->
-                  case nistp256PointFromBinary raw_pub_c1 of
+                  case pointFromBytes curve raw_pub_c1 of
                     CryptoFailed _ -> fail "bad client public point"
                     CryptoPassed pub_c -> return pub_c
-     let curve = ECDH.getCurveByName ECDH.SEC_p256r1
-     priv <- ECDH.generatePrivate curve
-     let pub_s = ECDH.calculatePublic curve priv
-         ECDH.SharedKey shared = ECDH.getShared curve priv pub_c
-     raw_pub_s <- case pub_s of
-                    ECDH.PointO -> fail "public point at infinity"
-                    ECDH.Point x y ->
-                       do let p = P256.pointFromIntegers (x,y)
-                          return ("\4" <> P256.pointToBinary p)
-     return (runPut (putString raw_pub_s), runPut (putMpInt shared))
 
-nistp256PointFromBinary :: S.ByteString -> CryptoFailable ECDH.Point
-nistp256PointFromBinary bs =
+     priv <- ECDH.generatePrivate curve
+
+     let pub_s     = ECDH.calculatePublic curve priv
+         raw_pub_s = runPut (putString (pointToBytes curve pub_s))
+
+         ECDH.SharedKey shared = ECDH.getShared curve priv pub_c
+         raw_shared            = runPut (putMpInt shared)
+
+     return (raw_pub_s, raw_shared)
+
+pointFromBytes :: ECC.Curve -> S.ByteString -> CryptoFailable ECC.Point
+pointFromBytes curve bs =
   case S.uncons bs of
-    Just (4, bs1) -> -- we don't support compression at this point
-      do p <- P256.pointFromBinary bs1
-         let (x,y) = P256.pointToIntegers p
-         return (ECDH.Point x y)
+    Just (4{-no compression-}, bs1)
+     | let n = curveSizeBytes curve
+     , 2 * n == S.length bs1 ->
+
+        case S.splitAt n bs1 of
+          (xbytes, ybytes) ->
+             let p = ECC.Point (bytesToInteger xbytes)
+                               (bytesToInteger ybytes)
+             in if ECC.isPointValid curve p
+                 then CryptoPassed p
+                 else CryptoFailed CryptoError_PublicKeySizeInvalid
+
     _ -> CryptoFailed CryptoError_PublicKeySizeInvalid
+
+pointToBytes :: ECC.Curve -> ECC.Point -> S.ByteString
+pointToBytes _ ECC.PointO = S.singleton 0
+pointToBytes curve (ECC.Point x y) =
+  S.concat ["\4" , integerToBytes n x, integerToBytes n y]
+  where
+  n = curveSizeBytes curve
+
+-- | Encoding integer in big-endian byte representation. This function
+-- fails if encoding size is too small to represent the number.
+integerToBytes ::
+  Int     {- ^ encoding size -} ->
+  Integer {- ^ data          -} ->
+  S.ByteString {- ^ big endian encoding of data -}
+integerToBytes n0 x0 = S.pack (aux [] n0 x0)
+  where
+  aux acc n x
+    | n <= 0 = if x /= 0 then error "integerToBytes: bytes too small!"
+                         else acc
+    | otherwise =
+         case quotRem x 256 of
+           (q,r) -> aux (fromIntegral r:acc) (n-1) q
+
+-- | Convert big-endian bytes to Integer, again!
+bytesToInteger :: S.ByteString -> Integer
+bytesToInteger = S.foldl' (\acc x -> acc*256 + fromIntegral x) 0
+
+curveSizeBytes :: ECC.Curve -> Int
+curveSizeBytes curve = (ECC.curveSizeBits curve + 7) `div` 8

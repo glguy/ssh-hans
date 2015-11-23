@@ -33,8 +33,9 @@ verifyPubKeyAuthentication
         RSA.verify (Just Hash.SHA1) (RSA.PublicKey (S.length s) n e) token s
 
       ("ecdsa-sha2-nistp256", SshPubEcDsaP256 pub, SshSigEcDsaP256 sig) ->
-        do p <- nistp256PointFromBinary pub
-           let p' = ECC.PublicKey (ECC.getCurveByName ECC.SEC_p256r1) p
+        do let curve = ECC.getCurveByName ECC.SEC_p256r1
+           p <- pointFromBytes curve pub
+           let p' = ECC.PublicKey curve p
            s <- eccSigFromBinary sig
            return (ECC.verify Hash.SHA256 p' s token)
         `catchCryptoFailure` \_ ->
