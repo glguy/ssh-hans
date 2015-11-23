@@ -53,8 +53,8 @@ data SshMsg = SshMsgDisconnect SshDiscReason !S.ByteString !S.ByteString
             | SshMsgServiceAccept SshService
             | SshMsgKexInit SshKex
             | SshMsgNewKeys
-            | SshMsgKexDhInit !Integer
-            | SshMsgKexDhReply SshPubCert !Integer SshSig
+            | SshMsgKexDhInit !S.ByteString
+            | SshMsgKexDhReply SshPubCert !S.ByteString SshSig
             | SshMsgUserAuthRequest !S.ByteString SshService SshAuthMethod
             | SshMsgUserAuthFailure
                  [S.ByteString] -- Supported methods
@@ -297,7 +297,7 @@ putSshMsg msg =
        SshMsgKexInit kex                -> putSshKex kex
 
        SshMsgNewKeys                    -> return ()
-       SshMsgKexDhInit n                -> putMpInt n
+       SshMsgKexDhInit n                -> putByteString n -- encoding varies
        SshMsgKexDhReply c f s           -> putDhReply c f s
 
        SshMsgUserAuthRequest         {} -> fail "unimplemented"
@@ -404,10 +404,10 @@ putSshSig (SshSigOther name bytes) =
   do putString name
      putByteString bytes
 
-putDhReply :: SshPubCert -> Integer -> SshSig -> Put
+putDhReply :: SshPubCert -> S.ByteString -> SshSig -> Put
 putDhReply cert f sig =
   do putString (runPut (putSshPubCert cert))
-     putMpInt f
+     putByteString f -- encoding varies by algorithm
      putString (runPut (putSshSig sig))
 
 putSshDiscReason :: Putter SshDiscReason
@@ -502,8 +502,8 @@ getSshMsg  =
        SshMsgTagServiceAccept           -> SshMsgServiceAccept  <$> getSshService
        SshMsgTagKexInit                 -> SshMsgKexInit    <$> getSshKex
        SshMsgTagNewKeys                 -> return SshMsgNewKeys
-       SshMsgTagKexDhInit               -> SshMsgKexDhInit  <$> getMpInt
-       SshMsgTagKexDhReply              -> getDhReply
+       SshMsgTagKexDhInit               -> SshMsgKexDhInit  <$> getRemaining
+       SshMsgTagKexDhReply              -> fail "unimplemented"
        SshMsgTagUserAuthRequest         -> getAuthRequest
        SshMsgTagUserAuthFailure         -> getUserAuthFailure
        SshMsgTagUserAuthSuccess         -> return SshMsgUserAuthSuccess
@@ -644,6 +644,7 @@ getSshSig  = label "SshSig" $
          do bytes <- getBytes =<< remaining
             return (SshSigOther name bytes)
 
+{-
 getDhReply :: Get SshMsg
 getDhReply  =
   do pubKeyLen <- getWord32be
@@ -655,6 +656,7 @@ getDhReply  =
      sig       <- isolate (fromIntegral sigLen) getSshSig
 
      return (SshMsgKexDhReply pubKey f sig)
+-}
 
 getSshService :: Get SshService
 getSshService  =

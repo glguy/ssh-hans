@@ -27,7 +27,6 @@ import qualified Crypto.PubKey.RSA as RSA
 import qualified Crypto.PubKey.RSA.PKCS15 as RSA
 import qualified Crypto.Hash.Algorithms as Hash
 import qualified Crypto.Hash as Hash
-import qualified Crypto.PubKey.DH as DH
 import           Crypto.Random (getRandomBytes)
 import           Data.ByteArray (convert)
 import qualified Data.ByteString.Char8 as S
@@ -126,30 +125,16 @@ startKex state client =
          _                 -> waitForClientKex -- XXX What can go here?
 
 
--- |Group 2 from RFC 2409
-oakley2 :: DH.Params
-oakley2 = DH.Params
-  { DH.params_p = 0xFFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE65381FFFFFFFFFFFFFFFF
-  , DH.params_g = 2
-  }
-
-group14 :: DH.Params
-group14 = DH.Params
-  { DH.params_p = 0xFFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3BE39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF6955817183995497CEA956AE515D2261898FA051015728E5A8AACAA68FFFFFFFFFFFFFFFF
-  , DH.params_g = 2
-  }
-
 startDh :: Client -> RSA.PrivateKey -> RSA.PublicKey -> SshState
-        -> (SshPubCert -> Integer -> Integer -> Integer -> S.ByteString)
+        -> (SshPubCert -> S.ByteString -> S.ByteString -> S.ByteString -> S.ByteString)
         -> IO SshSessionId
 startDh client priv pub state mkHash =
-  do SshMsgKexDhInit e <- receive client state
-     let hardcoded      = group14
-     y <- DH.generatePrivate hardcoded
-     let DH.PublicNumber f = DH.calculatePublic hardcoded y
-         DH.SharedKey k = DH.getShared hardcoded y (DH.PublicNumber e)
-         cert           = SshPubRsa (RSA.public_e pub) (RSA.public_n pub)
-         hash           = mkHash cert e f k
+  do SshMsgKexDhInit pub_c <- receive client state
+
+     (pub_s, k) <- runDh group14 pub_c
+
+     let cert           = SshPubRsa (RSA.public_e pub) (RSA.public_n pub)
+         hash           = mkHash cert pub_c pub_s k
          h              = convert (Hash.hashWith Hash.SHA1 hash)
          session_id     = SshSessionId h
          keys           = genKeys (convert . Hash.hashWith Hash.SHA1) k h session_id
@@ -158,13 +143,15 @@ startDh client priv pub state mkHash =
      Right sig <- RSA.signSafer (Just Hash.SHA1) priv h
 
      putStrLn "Sending DH reply"
-     send client state (SshMsgKexDhReply cert f (SshSigRsa sig))
+     send client state (SshMsgKexDhReply cert pub_s (SshSigRsa sig))
 
      putStrLn "Waiting for response"
      SshMsgNewKeys <- receive client state
      send client state SshMsgNewKeys
      transitionKeys keys state
      return session_id
+
+
 
 
 handleAuthentication ::

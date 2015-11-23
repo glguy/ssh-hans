@@ -29,9 +29,9 @@ sshDhHash :: SshIdent       -- ^ V_C
           -> SshKex         -- ^ I_C
           -> SshKex         -- ^ I_S
           -> SshPubCert     -- ^ K_S
-          -> Integer        -- ^ e
-          -> Integer        -- ^ f
-          -> Integer        -- ^ K
+          -> S.ByteString   -- ^ e
+          -> S.ByteString   -- ^ f
+          -> S.ByteString   -- ^ K
           -> S.ByteString
 sshDhHash v_c v_s i_c i_s k_s e f k = runPut $
   do putString (putIdent v_c)
@@ -39,9 +39,9 @@ sshDhHash v_c v_s i_c i_s k_s e f k = runPut $
      putString (runPut (putSshMsg (SshMsgKexInit i_c)))
      putString (runPut (putSshMsg (SshMsgKexInit i_s)))
      putString (runPut (putSshPubCert k_s))
-     putMpInt e
-     putMpInt f
-     putMpInt k
+     putByteString e -- encoding varies
+     putByteString f -- encoding varies
+     putByteString k -- encoding varies
   where
   -- special version of putSshIdent that drops the CR-LF at the end
   putIdent v = let bytes = runPut (putSshIdent v)
