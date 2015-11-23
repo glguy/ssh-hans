@@ -5,6 +5,8 @@
 #include <util.h>
 #elif __linux__
 #include <pty.h>
+#else
+#error "Can't find openpty"
 #endif
 
 #include <unistd.h>
