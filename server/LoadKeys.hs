@@ -11,8 +11,14 @@ import Data.Serialize (runGet)
 
 import Network.SSH.Messages
 
-loadPublicKey :: FilePath -> IO (Either String SshPubCert)
-loadPublicKey = fmap decodePublicKey . B.readFile
+loadPublicKeys :: FilePath -> IO [SshPubCert]
+loadPublicKeys fp =
+  do keys <- B.readFile fp
+     return [ key | line <- B8.lines keys
+                  , key  <- case decodePublicKey line of
+                              Right k -> [k]
+                              Left  _ -> []
+                  ]
 
 decodePublicKey :: ByteString -> Either String SshPubCert
 decodePublicKey xs =

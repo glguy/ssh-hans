@@ -38,13 +38,10 @@ main = withSocketsDo $
   do sock             <- listenOn (PortNumber 2200)
      (pubKey,privKey) <- loadKeys
 
-     home       <- getHomeDirectory
-     mbUserPubKey <- loadPublicKey (home </> ".ssh" </> "id_ecdsa.pub")
-     userPubKey <- case mbUserPubKey of
-                     Left e -> fail ("bad public key: " ++ e)
-                     Right x -> return x
-     user <- getEnv "USER"
-     let creds = [(S8.pack user,userPubKey)]
+     home    <- getHomeDirectory
+     pubKeys <- loadPublicKeys (home </> ".ssh" </> "authorized_keys")
+     user    <- getEnv "USER"
+     let creds = [(S8.pack user,pubKeys)]
 
      sshServer greeting privKey pubKey (mkServer creds sock)
 
@@ -66,7 +63,7 @@ convertWindowSize winsize =
     , wsYPixel = fromIntegral $ sshWsY    winsize
     }
 
-type Credentials = [(S.ByteString, SshPubCert)]
+type Credentials = [(S.ByteString, [SshPubCert])]
 
 mkClient :: Credentials -> (Handle,HostName,PortNumber) -> Client
 mkClient creds (h,_,_) = Client { .. }
@@ -117,16 +114,17 @@ mkClient creds (h,_,_) = Client { .. }
        SetGame.gameMain config
        hClose masterH
 
-  cAuthHandler session_id username svc (SshAuthPublicKey alg key mbSig) =
+  -- Querying for support
+  cAuthHandler _ _ _ (SshAuthPublicKey alg key Nothing) =
+    return (AuthPkOk alg key)
+
+  cAuthHandler session_id username svc (SshAuthPublicKey alg key (Just sig)) =
     case lookup username creds of
-      Just pub | pub == key ->
-       case mbSig of
-         Nothing -> return (AuthPkOk alg key)
-         Just sig
-           | verifyPubKeyAuthentication session_id username svc alg key sig
-                       -> return AuthAccepted
-           | otherwise -> return (AuthFailed ["publickey"])
-      _ -> return (AuthFailed ["publickey"])
+      Just pubs
+        | key `elem` pubs
+        , verifyPubKeyAuthentication session_id username svc alg key sig
+        -> print "good" >> print key >> return AuthAccepted
+      _ -> print "bad" >> print key >> return (AuthFailed ["publickey"])
 
   cAuthHandler _session_id user _svc m =
     do print (user,m)
