@@ -26,9 +26,7 @@ import qualified Control.Exception as X
 import qualified Crypto.PubKey.RSA as RSA
 import qualified Crypto.PubKey.RSA.PKCS15 as RSA
 import qualified Crypto.Hash.Algorithms as Hash
-import qualified Crypto.Hash as Hash
 import           Crypto.Random (getRandomBytes)
-import           Data.ByteArray (convert)
 import qualified Data.ByteString.Char8 as S
 import           Data.IORef
                      ( writeIORef, modifyIORef )
@@ -94,15 +92,16 @@ sayHello state client v_s =
 
 supportedKex :: SshCookie -> SshKex
 supportedKex cookie =
-  SshKex { sshKexAlgs           = [ "diffie-hellman-group14-sha1" ]
-         , sshServerHostKeyAlgs = [ "ssh-rsa" ]
-         , sshEncAlgs           = SshAlgs [ "aes128-cbc" ] [ "aes128-cbc" ]
-         , sshMacAlgs           = SshAlgs [ "hmac-sha1" ] [ "hmac-sha1" ]
-         , sshCompAlgs          = SshAlgs [ "none" ] [ "none" ]
-         , sshLanguages         = SshAlgs [] []
-         , sshFirstKexFollows   = False
-         , sshCookie            = cookie
-         }
+  SshKex
+    { sshKexAlgs           = [ kexName kex ]
+    , sshServerHostKeyAlgs = [ "ssh-rsa" ]
+    , sshEncAlgs           = SshAlgs [ "aes128-cbc" ] [ "aes128-cbc" ]
+    , sshMacAlgs           = SshAlgs [ "hmac-sha1" ] [ "hmac-sha1" ]
+    , sshCompAlgs          = SshAlgs [ "none" ] [ "none" ]
+    , sshLanguages         = SshAlgs [] []
+    , sshFirstKexFollows   = False
+    , sshCookie            = cookie
+    }
 
 newCookie :: IO SshCookie
 newCookie = fmap SshCookie (getRandomBytes 16)
@@ -124,20 +123,24 @@ startKex state client =
          SshMsgKexInit i_c -> return i_c
          _                 -> waitForClientKex -- XXX What can go here?
 
+-- Currently hardcoded kex algorithm
+kex :: Kex
+kex = ecdhSha2Nistp256
+-- kex = diffieHellmanGroup14Sha1
 
 startDh :: Client -> RSA.PrivateKey -> RSA.PublicKey -> SshState
         -> (SshPubCert -> S.ByteString -> S.ByteString -> S.ByteString -> S.ByteString)
         -> IO SshSessionId
-startDh client priv pub state mkHash =
+startDh client priv pub state mkToken =
   do SshMsgKexDhInit pub_c <- receive client state
 
-     (pub_s, k) <- runDh group14 pub_c
+     (pub_s, k) <- kexRun kex pub_c
 
      let cert           = SshPubRsa (RSA.public_e pub) (RSA.public_n pub)
-         hash           = mkHash cert pub_c pub_s k
-         h              = convert (Hash.hashWith Hash.SHA1 hash)
+         token          = mkToken cert pub_c pub_s k
+         h              = kexHash kex token
          session_id     = SshSessionId h
-         keys           = genKeys (convert . Hash.hashWith Hash.SHA1) k h session_id
+         keys           = genKeys (kexHash kex) k h session_id
 
      -- Uses IO to generate blinder
      Right sig <- RSA.signSafer (Just Hash.SHA1) priv h

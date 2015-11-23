@@ -4,6 +4,7 @@ module Network.SSH.UserAuth where
 import Control.Applicative (liftA2)
 import Network.SSH.Messages
 import Network.SSH.Protocol
+import Network.SSH.Keys
 import Data.Serialize ( runGet, runPut )
 import qualified Data.ByteString as S
 
@@ -11,7 +12,6 @@ import qualified Crypto.PubKey.Ed25519 as Ed25519
 import qualified Crypto.PubKey.RSA as RSA
 import qualified Crypto.PubKey.RSA.PKCS15 as RSA
 import qualified Crypto.PubKey.ECC.ECDSA as ECC
-import qualified Crypto.PubKey.ECC.P256 as ECC
 import qualified Crypto.PubKey.ECC.Types as ECC
 import qualified Crypto.Hash.Algorithms as Hash
 import Crypto.Error
@@ -33,9 +33,10 @@ verifyPubKeyAuthentication
         RSA.verify (Just Hash.SHA1) (RSA.PublicKey (S.length s) n e) token s
 
       ("ecdsa-sha2-nistp256", SshPubEcDsaP256 pub, SshSigEcDsaP256 sig) ->
-        do p <- nistp256PubFromBinary pub
+        do p <- nistp256PointFromBinary pub
+           let p' = ECC.PublicKey (ECC.getCurveByName ECC.SEC_p256r1) p
            s <- eccSigFromBinary sig
-           return (ECC.verify Hash.SHA256 p s token)
+           return (ECC.verify Hash.SHA256 p' s token)
         `catchCryptoFailure` \_ ->
            False
 
@@ -61,15 +62,6 @@ verifyPubKeyAuthentication
 
 catchCryptoFailure :: CryptoFailable a -> (CryptoError -> a) -> a
 catchCryptoFailure m h = onCryptoFailure h id m
-
-nistp256PubFromBinary :: S.ByteString -> CryptoFailable ECC.PublicKey
-nistp256PubFromBinary bs =
-  case S.uncons bs of
-    Just (4, bs1) -> -- we don't support compression at this point
-      do p <- ECC.pointFromBinary bs1
-         let (x,y) = ECC.pointToIntegers p
-         return (ECC.PublicKey (ECC.getCurveByName ECC.SEC_p256r1) (ECC.Point x y))
-    _ -> CryptoFailed CryptoError_PublicKeySizeInvalid
 
 eccSigFromBinary :: S.ByteString -> CryptoFailable ECC.Signature
 eccSigFromBinary bs =
