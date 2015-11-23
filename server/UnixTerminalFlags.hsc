@@ -55,13 +55,21 @@ setTerminalFlag flag =
     VSTART         -> setCC #{const VSTART}
     VSTOP          -> setCC #{const VSTOP}
     VSUSP          -> setCC #{const VSUSP}
-    VDSUSP         -> setCC #{const VDSUSP}
+#ifdef VDSUSP
+    VDSUSP         -> setCC #{const VDSUSP} -- OS X
+#else
+    VDSUSP         -> ignore
+#endif
     VREPRINT       -> setCC #{const VREPRINT}
     VWERASE        -> setCC #{const VWERASE}
     VLNEXT         -> setCC #{const VLNEXT}
     VFLUSH         -> ignore
     VSWTCH         -> ignore
-    VSTATUS        -> setCC #{const VSTATUS}
+#ifdef VSTATUS
+    VSTATUS        -> setCC #{const VSTATUS} -- OS X
+#else
+    VSTATUS        -> ignore
+#endif
     VDISCARD       -> setCC #{const VDISCARD}
 
     IGNPAR         -> setInput #{const IGNPAR}
