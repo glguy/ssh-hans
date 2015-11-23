@@ -75,7 +75,7 @@ mkClient :: Credentials -> (Handle,HostName,PortNumber) -> Client
 mkClient creds (h,_,_) = Client { .. }
   where
   cGet   = S.hGetSome h
-  cPut   = L.hPutStr  h
+  cPut   = S.hPutStr  h . L.toStrict
   cClose =   hClose   h
 
   cOpenShell (term,winsize,termflags) eventChannel writeBytes =
