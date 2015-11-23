@@ -42,11 +42,15 @@ data Server = Server { sAccept :: IO Client
                      }
 
 sshServer :: SshIdent -> RSA.PrivateKey -> RSA.PublicKey -> Server -> IO ()
-sshServer ident privKey pubKey sock = forever $
+sshServer v_s privKey pubKey sock = forever $
   do client <- sAccept sock
      forkIO $
-       do state  <- initialState
-          result <- sayHello state ident privKey pubKey client
+       do state      <- initialState
+          v_c        <- sayHello state client v_s
+          (i_s, i_c) <- startKex state client
+          sessionId  <- startDh client privKey pubKey state (sshDhHash v_c v_s i_c i_s)
+          result     <- handleAuthentication state client sessionId
+
           case result of
             Nothing -> send client state
                          (SshMsgDisconnect SshDiscNoMoreAuthMethodsAvailable
@@ -77,28 +81,20 @@ transitionKeys Keys { .. } SshState { .. } =
 
 
 
-
-
-sayHello ::
-  SshState ->
-  SshIdent ->
-  RSA.PrivateKey ->
-  RSA.PublicKey ->
-  Client ->
-  IO (Maybe (S.ByteString, SshService))
-sayHello state ident priv pub client =
-  do cPut client (runPutLazy (putSshIdent ident))
-     msg   <- parseFrom client (sshBuf state) getSshIdent
+-- | Exchange identification information
+sayHello :: SshState -> Client -> SshIdent -> IO SshIdent
+sayHello state client v_s =
+  do cPut client (runPutLazy (putSshIdent v_s))
+     -- parseFrom used because ident doesn't use the normal framing
+     msg <- parseFrom client (sshBuf state) getSshIdent
      print msg
      case msg of
-       Right v_c -> do print v_c
-                       startKex priv pub (sshDhHash v_c ident) state client
-       Left err  -> do print err
-                       return Nothing
+       Right v_c -> return v_c
+       Left err  -> fail err
 
 
 supportedKex :: SshCookie -> SshKex
-supportedKex sshCookie =
+supportedKex cookie =
   SshKex { sshKexAlgs           = [ "diffie-hellman-group14-sha1" ]
          , sshServerHostKeyAlgs = [ "ssh-rsa" ]
          , sshEncAlgs           = SshAlgs [ "aes128-cbc" ] [ "aes128-cbc" ]
@@ -106,16 +102,14 @@ supportedKex sshCookie =
          , sshCompAlgs          = SshAlgs [ "none" ] [ "none" ]
          , sshLanguages         = SshAlgs [] []
          , sshFirstKexFollows   = False
-         , ..
+         , sshCookie            = cookie
          }
 
 newCookie :: IO SshCookie
 newCookie = fmap SshCookie (getRandomBytes 16)
 
-startKex :: RSA.PrivateKey -> RSA.PublicKey
-         -> (SshKex -> SshKex -> SshPubCert -> Integer -> Integer -> Integer -> S.ByteString)
-         -> SshState -> Client -> IO (Maybe (S.ByteString, SshService))
-startKex priv pub mkHash state client =
+startKex :: SshState -> Client -> IO (SshKex, SshKex)
+startKex state client =
   do cookie <- newCookie
      let i_s = supportedKex cookie
 
@@ -123,13 +117,13 @@ startKex priv pub mkHash state client =
 
      i_c <- waitForClientKex
      putStrLn "Got KexInit"
-     startDh client priv pub state (mkHash i_c i_s)
+     return (i_s, i_c)
   where
   waitForClientKex =
     do msg <- receive client state
        case msg of
          SshMsgKexInit i_c -> return i_c
-         _                 -> waitForClientKex
+         _                 -> waitForClientKex -- XXX What can go here?
 
 
 -- |Group 2 from RFC 2409
@@ -147,7 +141,7 @@ group14 = DH.Params
 
 startDh :: Client -> RSA.PrivateKey -> RSA.PublicKey -> SshState
         -> (SshPubCert -> Integer -> Integer -> Integer -> S.ByteString)
-        -> IO (Maybe (S.ByteString, SshService))
+        -> IO SshSessionId
 startDh client priv pub state mkHash =
   do SshMsgKexDhInit e <- receive client state
      let hardcoded      = group14
@@ -156,31 +150,27 @@ startDh client priv pub state mkHash =
          DH.SharedKey k = DH.getShared hardcoded y (DH.PublicNumber e)
          cert           = SshPubRsa (RSA.public_e pub) (RSA.public_n pub)
          hash           = mkHash cert e f k
-         h'             = convert (Hash.hashWith Hash.SHA1 hash)
+         h              = convert (Hash.hashWith Hash.SHA1 hash)
+         session_id     = SshSessionId h
+         keys           = genKeys (convert . Hash.hashWith Hash.SHA1) k h session_id
 
      -- Uses IO to generate blinder
-     Right sig <-RSA.signSafer (Just Hash.SHA1) priv h'
-
-     let session_id     = SshSessionId h'
-         keys           = genKeys (convert . Hash.hashWith Hash.SHA1) k h' session_id
-
+     Right sig <- RSA.signSafer (Just Hash.SHA1) priv h
 
      putStrLn "Sending DH reply"
      send client state (SshMsgKexDhReply cert f (SshSigRsa sig))
 
      putStrLn "Waiting for response"
-     getDhResponse client priv pub session_id state keys
-
-
-getDhResponse :: Client -> RSA.PrivateKey -> RSA.PublicKey -> SshSessionId
-              -> SshState -> Keys -> IO (Maybe (S.ByteString, SshService))
-getDhResponse client _priv _pub session_id state keys =
-  do SshMsgNewKeys <- receive client state
+     SshMsgNewKeys <- receive client state
      send client state SshMsgNewKeys
-
      transitionKeys keys state
+     return session_id
 
-     let notAvailable = send client state
+
+handleAuthentication ::
+  SshState -> Client -> SshSessionId -> IO (Maybe (S.ByteString, SshService))
+handleAuthentication state client session_id =
+  do let notAvailable = send client state
                       $ SshMsgDisconnect SshDiscServiceNotAvailable "" "en-us"
 
      req <- receive client state
