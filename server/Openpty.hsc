@@ -12,7 +12,6 @@
 module Openpty where
 
 import Control.Applicative
-import qualified Data.ByteString as S
 import System.Posix.Types (Fd(Fd))
 import Data.Word
 
