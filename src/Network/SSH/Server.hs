@@ -86,16 +86,24 @@ rsaAuthentication pubKey privKey makeToken =
 -- | Install new keys (and algorithms) into the SshState.
 transitionKeys :: Keys -> SshState -> IO ()
 transitionKeys Keys { .. } SshState { .. } =
-  do writeIORef sshDecC (snd (cipher_aes128_cbc (kpClientToServer kInitialIV) (kpClientToServer kEncKey)))
+
+  do let c2s_cipher = cipher_aes128_cbc
+         c2s_mac    = mac_hmac_sha1
+
+         s2c_cipher = cipher_aes128_ctr
+         s2c_mac    = mac_hmac_sha1
+
+     writeIORef sshDecC (snd (c2s_cipher (kpClientToServer kInitialIV)
+                                         (kpClientToServer kEncKey)))
 
      modifyIORef sshAuthC $ \ mac ->
-       let mac' = mac_hmac_sha1 (kpClientToServer kIntegKey)
+       let mac' = c2s_mac (kpClientToServer kIntegKey)
         in mac `switch` mac'
 
      modifyMVar_ sshSendState $ \(_,mac) ->
-       let cipher = fst (cipher_aes128_ctr (kpServerToClient kInitialIV)
-                                           (kpServerToClient kEncKey))
-           mac' = mac_hmac_sha1 (kpServerToClient kIntegKey)
+       let cipher = fst (s2c_cipher (kpServerToClient kInitialIV)
+                                    (kpServerToClient kEncKey))
+           mac' = s2c_mac (kpServerToClient kIntegKey)
         in return (cipher, mac `switch` mac')
 
      putStrLn "New keys installed."
