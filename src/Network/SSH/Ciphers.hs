@@ -10,6 +10,7 @@ module Network.SSH.Ciphers (
 
   , cipher_none
   , cipher_aes128_cbc
+  , cipher_aes128_ctr
   ) where
 
 import qualified Data.ByteString as S
@@ -93,3 +94,29 @@ cipher_aes128_cbc initial_iv key = (enc_cipher, dec_cipher)
     Just iv' = Cipher.makeIV
              $ S.drop (S.length cipherText - ivSize)
              $ cipherText
+
+cipher_aes128_ctr :: L.ByteString -- ^ IV
+                  -> L.ByteString -- ^ Key
+                  -> (Cipher,Cipher)
+cipher_aes128_ctr initial_iv key = (cipher, cipher)
+  where
+
+  aesKey :: AES128
+  CryptoPassed aesKey = Cipher.cipherInit (L.toStrict (L.take (fromIntegral keySize) key))
+  Cipher.KeySizeFixed keySize = Cipher.cipherKeySize aesKey
+
+  iv0    :: Cipher.IV AES128
+  Just iv0 = Cipher.makeIV (L.toStrict (L.take (fromIntegral ivSize) initial_iv))
+  ivSize  = Cipher.blockSize aesKey
+
+  cipher =
+    Cipher { cName      = "aes128-ctr"
+           , cBlockSize = ivSize
+           , cEncrypt   = enc iv0
+           }
+
+  enc iv bytes = (cipherText, cipher { cEncrypt = enc iv' })
+    where
+    cipherText = Cipher.ctrCombine aesKey iv bytes
+    iv' = Cipher.ivAdd iv
+        $ S.length bytes `quot` ivSize

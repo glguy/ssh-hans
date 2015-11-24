@@ -93,7 +93,7 @@ transitionKeys Keys { .. } SshState { .. } =
         in mac `switch` mac'
 
      modifyMVar_ sshSendState $ \(_,mac) ->
-       let cipher = fst (cipher_aes128_cbc (kpServerToClient kInitialIV)
+       let cipher = fst (cipher_aes128_ctr (kpServerToClient kInitialIV)
                                            (kpServerToClient kEncKey))
            mac' = mac_hmac_sha1 (kpServerToClient kIntegKey)
         in return (cipher, mac `switch` mac')
@@ -119,7 +119,7 @@ supportedKex kex cookie =
   SshKex
     { sshKexAlgs           = [ kexName kex ]
     , sshServerHostKeyAlgs = [ "ssh-rsa" ]
-    , sshEncAlgs           = SshAlgs [ "aes128-cbc" ] [ "aes128-cbc" ]
+    , sshEncAlgs           = SshAlgs [ "aes128-cbc" ] [ "aes128-ctr" ]
     , sshMacAlgs           = SshAlgs [ "hmac-sha1" ] [ "hmac-sha1" ]
     , sshCompAlgs          = SshAlgs [ "none" ] [ "none" ]
     , sshLanguages         = SshAlgs [] []
