@@ -67,7 +67,7 @@ putSshPacket Cipher{..} mac render = (packet,Cipher{cipherState=st',..},mac')
   where
   packet = L.fromChunks [ encBody, sig ]
 
-  (st',encBody) = crypt cipherState body
+  (st',encBody) = encrypt cipherState body
   (sig,mac')    = sign mac body
 
   body = runPut $
@@ -164,7 +164,7 @@ getSshPacket Cipher{..} mac getPayload = label "SshPacket" $
 
   decryptGet len m =
      do encBytes <- getBytes len
-        let (st',bytes) = crypt cipherState encBytes
+        let (st',bytes) = decrypt cipherState encBytes
         case runGet m bytes of
           Right a  -> return (a,Cipher{cipherState=st',..})
           Left err -> fail err

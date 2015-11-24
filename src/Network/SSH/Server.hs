@@ -33,10 +33,10 @@ import           Data.IORef
 import           Data.Serialize
                      ( runPutLazy )
 
-c2s_cipher = snd . cipher_aes128_gcm
+c2s_cipher = cipher_aes128_gcm
 c2s_mac    = const mac_none
 
-s2c_cipher = fst . cipher_aes128_gcm
+s2c_cipher = cipher_aes128_gcm
 s2c_mac    = const mac_none -- mac_hmac_sha2_512
 
 -- Public API ------------------------------------------------------------------
