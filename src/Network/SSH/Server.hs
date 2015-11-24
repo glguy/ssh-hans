@@ -88,10 +88,10 @@ transitionKeys :: Keys -> SshState -> IO ()
 transitionKeys Keys { .. } SshState { .. } =
 
   do let c2s_cipher = cipher_aes128_cbc
-         c2s_mac    = mac_hmac_sha1
+         c2s_mac    = mac_hmac_sha2_256
 
          s2c_cipher = cipher_aes128_ctr
-         s2c_mac    = mac_hmac_sha1
+         s2c_mac    = mac_hmac_sha2_512
 
      writeIORef sshDecC (snd (c2s_cipher (kpClientToServer kInitialIV)
                                          (kpClientToServer kEncKey)))
@@ -128,7 +128,7 @@ supportedKex kex cookie =
     { sshKexAlgs           = [ kexName kex ]
     , sshServerHostKeyAlgs = [ "ssh-rsa" ]
     , sshEncAlgs           = SshAlgs [ "aes128-cbc" ] [ "aes128-ctr" ]
-    , sshMacAlgs           = SshAlgs [ "hmac-sha1" ] [ "hmac-sha1" ]
+    , sshMacAlgs           = SshAlgs [ "hmac-sha2-256" ] [ "hmac-sha2-512" ]
     , sshCompAlgs          = SshAlgs [ "none" ] [ "none" ]
     , sshLanguages         = SshAlgs [] []
     , sshFirstKexFollows   = False

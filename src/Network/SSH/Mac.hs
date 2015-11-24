@@ -9,6 +9,8 @@ module Network.SSH.Mac (
 
   , mac_none
   , mac_hmac_sha1
+  , mac_hmac_sha2_256
+  , mac_hmac_sha2_512
   ) where
 
 import qualified Data.ByteString.Char8 as S
@@ -17,7 +19,7 @@ import           Data.Serialize ( runPut, putWord32be, putByteString )
 import           Data.Word ( Word32 )
 
 import qualified Crypto.MAC.HMAC as HMAC
-import qualified Crypto.Hash.Algorithms as Hash
+import qualified Crypto.Hash as Hash
 import           Data.ByteArray (convert)
 
 
@@ -52,12 +54,34 @@ mac_none  =
       , mFunction   = const S.empty
       }
 
-mac_hmac_sha1 :: L.ByteString -> Mac
-mac_hmac_sha1 keyBytes =
-  Mac { mName       = "hmac-sha1"
+mk_mac_hmac ::
+  Hash.HashAlgorithm a =>
+  a ->
+  S.ByteString {- ^ name -} ->
+  L.ByteString {- ^ key stream -} ->
+  Mac
+mk_mac_hmac h name = \keyStream ->
+  let keySize = fromIntegral (Hash.hashDigestSize h)
+      key = L.toStrict (L.take keySize keyStream) in
+  Mac { mName       = name
       , mNextSeqNum = 0
-      , mFunction   = convert . mac
+      , mFunction   = convert . hmac' h key
       }
-  where
-  mac :: S.ByteString -> HMAC.HMAC Hash.SHA1
-  mac = HMAC.hmac (L.toStrict (L.take 20 keyBytes))
+
+-- | A helper that calls 'HMAC.hmac' using an argument to select the hash
+hmac' ::
+  Hash.HashAlgorithm a =>
+  a ->
+  S.ByteString {- ^ key     -} ->
+  S.ByteString {- ^ message -} ->
+  HMAC.HMAC a
+hmac' _ = HMAC.hmac
+
+mac_hmac_sha1 :: L.ByteString -> Mac
+mac_hmac_sha1 = mk_mac_hmac Hash.SHA1 "hmac-sha1"
+
+mac_hmac_sha2_256 :: L.ByteString -> Mac
+mac_hmac_sha2_256 = mk_mac_hmac Hash.SHA256 "hmac-sha2-256"
+
+mac_hmac_sha2_512 :: L.ByteString -> Mac
+mac_hmac_sha2_512 = mk_mac_hmac Hash.SHA512 "hmac-sha2-512"
