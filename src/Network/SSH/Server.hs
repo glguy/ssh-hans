@@ -33,10 +33,10 @@ import           Data.IORef
 import           Data.Serialize
                      ( runPutLazy )
 
-c2s_cipher a b = snd (cipher_aes128_gcm a b)
+c2s_cipher = snd . cipher_aes128_gcm
 c2s_mac    = const mac_none
 
-s2c_cipher a b = fst (cipher_aes128_gcm a b)
+s2c_cipher = fst . cipher_aes128_gcm
 s2c_mac    = const mac_none -- mac_hmac_sha2_512
 
 -- Public API ------------------------------------------------------------------
@@ -93,17 +93,15 @@ rsaAuthentication pubKey privKey makeToken =
 transitionKeys :: Keys -> SshState -> IO ()
 transitionKeys Keys { .. } SshState { .. } =
 
-  do writeIORef sshDecC (c2s_cipher (kpClientToServer kInitialIV)
-                                    (kpClientToServer kEncKey))
+  do writeIORef sshDecC (c2s_cipher k_c2s_cipherKeys)
 
      modifyIORef sshAuthC $ \ mac ->
-       let mac' = c2s_mac (kpClientToServer kIntegKey)
+       let mac' = c2s_mac k_c2s_integKey
         in mac `switch` mac'
 
      modifyMVar_ sshSendState $ \(_,mac) ->
-       let cipher = s2c_cipher (kpServerToClient kInitialIV)
-                               (kpServerToClient kEncKey)
-           mac' = s2c_mac (kpServerToClient kIntegKey)
+       let cipher = s2c_cipher k_s2c_cipherKeys
+           mac' = s2c_mac k_s2c_integKey
         in return (cipher, mac `switch` mac')
 
      putStrLn "New keys installed."
@@ -121,13 +119,15 @@ sayHello state client v_s =
        Right v_c -> return v_c
        Left err  -> fail err
 
+nullKeys :: CipherKeys
+nullKeys = CipherKeys "" ""
 
 supportedKex :: Kex -> SshCookie -> SshKex
 supportedKex kex cookie =
   SshKex
     { sshKexAlgs           = [ kexName kex ]
     , sshServerHostKeyAlgs = [ "ssh-rsa" ]
-    , sshEncAlgs           = SshAlgs [ cipherName (c2s_cipher """")] [ cipherName (s2c_cipher """")]
+    , sshEncAlgs           = SshAlgs [ cipherName (c2s_cipher nullKeys)] [ cipherName (s2c_cipher nullKeys)]
     , sshMacAlgs           = SshAlgs [ mName (c2s_mac "") ] [ mName (s2c_mac "")]
     , sshCompAlgs          = SshAlgs [ "none" ] [ "none" ]
     , sshLanguages         = SshAlgs [] []

@@ -20,30 +20,33 @@ import qualified Crypto.Hash as Hash
 import           Data.ByteArray (convert)
 
 
-data KeyPair = KeyPair { kpClientToServer :: L.ByteString
-                       , kpServerToClient :: L.ByteString
-                       } deriving (Show)
+data CipherKeys = CipherKeys
+  { ckInitialIV :: L.ByteString
+  , ckEncKey    :: L.ByteString
+  }
 
-data Keys = Keys { kInitialIV :: !KeyPair
-                 , kEncKey    :: !KeyPair
-                 , kIntegKey  :: !KeyPair
-                 } deriving (Show)
+data Keys = Keys
+  { k_c2s_cipherKeys :: CipherKeys
+  , k_s2c_cipherKeys :: CipherKeys
+  , k_c2s_integKey   :: L.ByteString
+  , k_s2c_integKey   :: L.ByteString
+  }
 
 genKeys :: (S.ByteString -> S.ByteString)
         -> S.ByteString -> S.ByteString
         -> Keys
-genKeys hash k h =
-  Keys { kInitialIV = KeyPair { kpClientToServer = mkKey "A"
-                              , kpServerToClient = mkKey "B"
-                              }
-       , kEncKey    = KeyPair { kpClientToServer = mkKey "C"
-                              , kpServerToClient = mkKey "D"
-                              }
-       , kIntegKey  = KeyPair { kpClientToServer = mkKey "E"
-                              , kpServerToClient = mkKey "F"
-                              }
-       }
-
+genKeys hash k h = Keys
+  { k_c2s_cipherKeys = CipherKeys
+      { ckInitialIV = mkKey "A"
+      , ckEncKey    = mkKey "C"
+      }
+  , k_s2c_cipherKeys = CipherKeys
+      { ckInitialIV = mkKey "B"
+      , ckEncKey    = mkKey "D"
+      }
+  , k_c2s_integKey  = mkKey "E"
+  , k_s2c_integKey  = mkKey "F"
+  }
   where
   mkKey = genKey hash k h
 

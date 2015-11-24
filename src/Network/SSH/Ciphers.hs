@@ -26,7 +26,8 @@ import           Data.Serialize
 import           Data.Word
 import           Data.ByteArray (convert)
 import           Data.Monoid ((<>))
-import           Debug.Trace
+
+import           Network.SSH.Keys
 
 -- | A streaming cipher.
 data Cipher = forall st. Cipher
@@ -53,10 +54,9 @@ cipher_none  =
          , paddingSize = roundUp 8
          }
 
-cipher_aes128_cbc :: L.ByteString -- ^ IV
-                  -> L.ByteString -- ^ Key
-                  -> (Cipher,Cipher)
-cipher_aes128_cbc initial_iv key = (enc_cipher, dec_cipher)
+cipher_aes128_cbc :: CipherKeys -> (Cipher,Cipher)
+cipher_aes128_cbc CipherKeys { ckInitialIV = initial_iv, ckEncKey = key } =
+  (enc_cipher, dec_cipher)
   where
 
   aesKey :: AES128
@@ -104,10 +104,9 @@ cipher_aes128_cbc initial_iv key = (enc_cipher, dec_cipher)
              $ S.drop (S.length cipherText - ivSize)
              $ cipherText
 
-cipher_aes128_ctr :: L.ByteString -- ^ IV
-                  -> L.ByteString -- ^ Key
-                  -> (Cipher,Cipher)
-cipher_aes128_ctr initial_iv key = (enc_cipher, dec_cipher)
+cipher_aes128_ctr :: CipherKeys -> (Cipher,Cipher)
+cipher_aes128_ctr CipherKeys { ckInitialIV = initial_iv, ckEncKey = key } =
+  (enc_cipher, dec_cipher)
   where
 
   aesKey :: AES128
@@ -150,11 +149,9 @@ cipher_aes128_ctr initial_iv key = (enc_cipher, dec_cipher)
     iv' = Cipher.ivAdd iv
         $ S.length bytes `quot` ivSize
 
-cipher_aes128_gcm ::
-  L.ByteString {- ^ IV stream -} ->
-  L.ByteString {- ^ Key stream -} ->
-  (Cipher,Cipher) {- ^ encrypt, decrypt -}
-cipher_aes128_gcm initial_iv key = (enc_cipher, dec_cipher)
+cipher_aes128_gcm :: CipherKeys -> (Cipher,Cipher) {- ^ encrypt, decrypt -}
+cipher_aes128_gcm CipherKeys { ckInitialIV = initial_iv, ckEncKey = key } =
+  (enc_cipher, dec_cipher)
   where
 
   aesKey :: AES128
