@@ -1,14 +1,15 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE RecordWildCards #-}
 
 module Network.SSH.Ciphers (
-    Cipher()
+    Cipher(..)
   , cipherName
   , blockSize
-  , encrypt
-  , decrypt
+  , crypt
 
-  , cipher_none
+  , cipher_none_dec
+  , cipher_none_enc
   , cipher_aes128_cbc
   , cipher_aes128_ctr
   ) where
@@ -21,36 +22,42 @@ import           Crypto.Error
 import           Crypto.Cipher.AES
 import qualified Crypto.Cipher.Types as Cipher
 
+import           Data.Serialize ( putWord32be, runPut, getWord32be, runGet )
 
 -- | A streaming cipher.
-data Cipher = Cipher { cName      :: !S.ByteString
-                     , cBlockSize :: !Int
-                     , cEncrypt   :: S.ByteString -> (S.ByteString,Cipher)
-                     }
+data Cipher = forall st. Cipher
+  { cipherName :: !S.ByteString
+  , blockSize  :: !Int
+  , cipherState :: st
+  , getLength  :: st -> S.ByteString -> Int
+  , crypt      :: st -> S.ByteString -> (st, S.ByteString)
+  }
 
 instance Show Cipher where
-  show Cipher { .. } = S8.unpack cName
+  show Cipher { .. } = S8.unpack cipherName
 
-cipherName :: Cipher -> S.ByteString
-cipherName Cipher { .. } = cName
-
-blockSize :: Cipher -> Int
-blockSize Cipher { .. } = cBlockSize
-
-encrypt :: Cipher -> S.ByteString -> (S.ByteString,Cipher)
-encrypt Cipher { .. } = cEncrypt
-
-decrypt :: Cipher -> S.ByteString -> (S.ByteString,Cipher)
-decrypt Cipher { .. } = cEncrypt
-
+addLength :: S.ByteString -> S.ByteString
+addLength bytes = S.append (runPut (putWord32be (fromIntegral (S.length bytes))))
+                           bytes
 
 -- Supported Ciphers -----------------------------------------------------------
 
-cipher_none :: Cipher
-cipher_none  =
-  Cipher { cName      = "none"
-         , cBlockSize = 8
-         , cEncrypt   = \x -> (x,cipher_none)
+cipher_none_enc :: Cipher
+cipher_none_enc  =
+  Cipher { cipherName      = "none"
+         , blockSize = 8
+         , cipherState = ()
+         , crypt = \_ x -> ((), addLength x)
+         , getLength = \_ -> either undefined fromIntegral . runGet getWord32be
+         }
+
+cipher_none_dec :: Cipher
+cipher_none_dec  =
+  Cipher { cipherName      = "none"
+         , blockSize = 8
+         , cipherState = ()
+         , crypt = \_ x -> ((), x)
+         , getLength = \_ -> either undefined fromIntegral . runGet getWord32be
          }
 
 cipher_aes128_cbc :: L.ByteString -- ^ IV
@@ -68,27 +75,33 @@ cipher_aes128_cbc initial_iv key = (enc_cipher, dec_cipher)
   ivSize  = Cipher.blockSize aesKey
 
   enc_cipher =
-    Cipher { cName      = "aes128-cbc"
-           , cBlockSize = ivSize
-           , cEncrypt   = enc iv0
+    Cipher { cipherName  = "aes128-cbc"
+           , blockSize   = ivSize
+           , crypt       = \iv bytes -> enc iv (addLength bytes)
+           , cipherState = iv0
+           , getLength   = error "get length not supported for encryption"
            }
 
-  enc iv bytes
-    | S.null bytes = (bytes, enc_cipher { cEncrypt = enc iv })
-    | otherwise     = (cipherText, enc_cipher { cEncrypt = enc iv' })
+
+  enc iv bytes = (iv', cipherText)
     where
     cipherText = Cipher.cbcEncrypt aesKey iv bytes
     Just iv' = Cipher.makeIV (S.drop (S.length bytes - ivSize) cipherText)
 
   dec_cipher =
-    Cipher { cName      = "aes128-cbc"
-           , cBlockSize = ivSize
-           , cEncrypt   = dec iv0
+    Cipher { cipherName  = "aes128-cbc"
+           , blockSize   = ivSize
+           , cipherState = iv0
+           , crypt       = dec
+           , getLength   = \st block ->
+                           either undefined fromIntegral
+                         $ runGet getWord32be
+                         $ snd -- ignore new state
+                         $ dec st block
            }
 
-  dec iv cipherText
-    | S.null cipherText = (cipherText, enc_cipher { cEncrypt = dec iv })
-    | otherwise         = (bytes, enc_cipher { cEncrypt = dec iv' })
+  dec :: Cipher.IV AES128 -> S.ByteString -> (Cipher.IV AES128, S.ByteString)
+  dec iv cipherText = (iv', bytes)
     where
     bytes = Cipher.cbcDecrypt aesKey iv cipherText
     Just iv' = Cipher.makeIV
@@ -98,7 +111,7 @@ cipher_aes128_cbc initial_iv key = (enc_cipher, dec_cipher)
 cipher_aes128_ctr :: L.ByteString -- ^ IV
                   -> L.ByteString -- ^ Key
                   -> (Cipher,Cipher)
-cipher_aes128_ctr initial_iv key = (cipher, cipher)
+cipher_aes128_ctr initial_iv key = (enc_cipher, dec_cipher)
   where
 
   aesKey :: AES128
@@ -109,13 +122,31 @@ cipher_aes128_ctr initial_iv key = (cipher, cipher)
   Just iv0 = Cipher.makeIV (L.toStrict (L.take (fromIntegral ivSize) initial_iv))
   ivSize  = Cipher.blockSize aesKey
 
-  cipher =
-    Cipher { cName      = "aes128-ctr"
-           , cBlockSize = ivSize
-           , cEncrypt   = enc iv0
+  enc_cipher =
+    Cipher { cipherName       = "aes128-ctr"
+           , blockSize  = ivSize
+           , crypt       = \st bytes -> enc st (addLength bytes)
+           , cipherState = iv0
+           , getLength   = \st block ->
+                           either undefined fromIntegral
+                         $ runGet getWord32be
+                         $ snd -- ignore new state
+                         $ enc st block
            }
 
-  enc iv bytes = (cipherText, cipher { cEncrypt = enc iv' })
+  dec_cipher =
+    Cipher { cipherName       = "aes128-ctr"
+           , blockSize  = ivSize
+           , crypt       = enc
+           , cipherState = iv0
+           , getLength   = \st block ->
+                           either undefined fromIntegral
+                         $ runGet getWord32be
+                         $ snd -- ignore new state
+                         $ enc st block
+           }
+
+  enc iv bytes = (iv', cipherText)
     where
     cipherText = Cipher.ctrCombine aesKey iv bytes
     iv' = Cipher.ivAdd iv

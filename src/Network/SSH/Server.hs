@@ -87,10 +87,10 @@ rsaAuthentication pubKey privKey makeToken =
 transitionKeys :: Keys -> SshState -> IO ()
 transitionKeys Keys { .. } SshState { .. } =
 
-  do let c2s_cipher = cipher_aes128_cbc
+  do let c2s_cipher = cipher_aes128_ctr
          c2s_mac    = mac_hmac_sha2_256
 
-         s2c_cipher = cipher_aes128_ctr
+         s2c_cipher = cipher_aes128_cbc
          s2c_mac    = mac_hmac_sha2_512
 
      writeIORef sshDecC (snd (c2s_cipher (kpClientToServer kInitialIV)
@@ -127,7 +127,7 @@ supportedKex kex cookie =
   SshKex
     { sshKexAlgs           = [ kexName kex ]
     , sshServerHostKeyAlgs = [ "ssh-rsa" ]
-    , sshEncAlgs           = SshAlgs [ "aes128-cbc" ] [ "aes128-ctr" ]
+    , sshEncAlgs           = SshAlgs [ "aes128-ctr" ] [ "aes128-cbc" ]
     , sshMacAlgs           = SshAlgs [ "hmac-sha2-256" ] [ "hmac-sha2-512" ]
     , sshCompAlgs          = SshAlgs [ "none" ] [ "none" ]
     , sshLanguages         = SshAlgs [] []

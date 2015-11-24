@@ -63,23 +63,24 @@ putSshIdent SshIdent { .. } =
 
 -- | Given a way to render something, turn it into an ssh packet.
 putSshPacket :: Cipher -> Mac -> Put -> (L.ByteString,Cipher,Mac)
-putSshPacket cipher mac render = (packet,cipher',mac')
+putSshPacket Cipher{..} mac render = (packet,Cipher{cipherState=st',..},mac')
   where
   packet = L.fromChunks [ encBody, sig ]
 
-  (encBody,cipher') = encrypt cipher body
-  (sig,mac')        = sign mac body
+  (st',encBody) = crypt cipherState body
+  (sig,mac')    = sign mac (S.append lenPart body)
+
+  lenPart = runPut (putWord32be (fromIntegral (1 + bytesLen + paddingLen)))
 
   body = runPut $
-    do putWord32be (fromIntegral (1 + bytesLen + paddingLen))
-       putWord8 (fromIntegral paddingLen)
+    do putWord8 (fromIntegral paddingLen)
        putByteString bytes
        putByteString padding
 
   bytes    = runPut render
   bytesLen = S.length bytes
 
-  align = max (blockSize cipher) 8
+  align = max blockSize 8
 
   bytesRem   = (4 + 1 + bytesLen) `mod` align
 
@@ -146,21 +147,17 @@ getSshIdent  = label "SshIdent" $
 -- | Given a way to parse the payload of an ssh packet, do the required
 -- book-keeping surrounding the data.
 getSshPacket :: Show a =>  Cipher -> Mac -> Get a -> Get (a,Cipher,Mac)
-getSshPacket cipher mac getPayload = label "SshPacket" $
-  do let blockLen = max (blockSize cipher) 8
-     ((packetLen,paddingLen),_) <- lookAhead $ decryptGet blockLen $
-       do packetLen  <- getWord32be
-          paddingLen <- getWord8
-
-          unless (paddingLen >= 4) (fail "Corrupted padding length")
-
-          return (fromIntegral packetLen, fromIntegral paddingLen)
+getSshPacket Cipher{..} mac getPayload = label "SshPacket" $
+  do let blockLen = max blockSize 8
+     firstBlock <- lookAhead (getBytes blockLen)
+     let packetLen = getLength cipherState firstBlock
 
      -- decrypt and decode the packet
      ((payload,sig',mac'),cipher') <- decryptGet (packetLen + 4) $
        do (sig',mac') <- lookAhead (genSig (packetLen + 4))
 
-          skip 5 -- skip the packet len and payload len, parsed above already
+          skip 4
+          paddingLen <- fmap fromIntegral getWord8
 
           let payloadLen = packetLen - paddingLen - 1
           payload <- label "payload" (isolate payloadLen getPayload)
@@ -176,11 +173,11 @@ getSshPacket cipher mac getPayload = label "SshPacket" $
   where
 
   decryptGet len m =
-    do encBytes <- getBytes len
-       let (bytes,cipher') = decrypt cipher encBytes
-       case runGet m bytes of
-         Right a  -> return (a,cipher')
-         Left err -> fail err
+     do encBytes <- getBytes len
+        let (st',bytes) = crypt cipherState encBytes
+        case runGet m bytes of
+          Right a  -> return (a,Cipher{cipherState=st',..})
+          Left err -> fail err
 
   genSig payloadLen =
     do payload <- getBytes payloadLen
