@@ -15,7 +15,7 @@ import           Data.Char ( chr )
 import           Data.Serialize
                      ( Get, Put, runGet, runPut, label, isolate, remaining
                      , lookAhead, skip, getBytes, getWord8, putWord8
-                     , getWord32be, putWord32be, Putter, putByteString )
+                     , putWord32be, Putter, putByteString )
 
 data SshIdent = SshIdent { sshProtoVersion
                          , sshSoftwareVersion
@@ -68,29 +68,18 @@ putSshPacket Cipher{..} mac render = (packet,Cipher{cipherState=st',..},mac')
   packet = L.fromChunks [ encBody, sig ]
 
   (st',encBody) = crypt cipherState body
-  (sig,mac')    = sign mac (S.append lenPart body)
-
-  lenPart = runPut (putWord32be (fromIntegral (1 + bytesLen + paddingLen)))
+  (sig,mac')    = sign mac body
 
   body = runPut $
-    do putWord8 (fromIntegral paddingLen)
+    do putWord32be (fromIntegral packetLen)
+       putWord8 (fromIntegral paddingLen)
        putByteString bytes
        putByteString padding
 
   bytes    = runPut render
   bytesLen = S.length bytes
-
-  align = max blockSize 8
-
-  bytesRem   = (4 + 1 + bytesLen) `mod` align
-
-  -- number of bytes needed to align on block size
-  alignBytes | bytesRem == 0 = 0
-             | otherwise     = align - bytesRem
-
-  paddingLen | alignBytes == 0 =              align
-             | alignBytes <  4 = alignBytes + align
-             | otherwise       = alignBytes
+  paddingLen = paddingSize bytesLen
+  packetLen = 1 + bytesLen + paddingLen
 
   -- XXX the padding SHOULD be random bytes, so this should probably change
   padding = S.replicate paddingLen 0x0
@@ -154,12 +143,13 @@ getSshPacket Cipher{..} mac getPayload = label "SshPacket" $
 
      -- decrypt and decode the packet
      ((payload,sig',mac'),cipher') <- decryptGet (packetLen + 4) $
-       do (sig',mac') <- lookAhead (genSig (packetLen + 4))
+       do (sig',mac') <- lookAhead genSig
 
           skip 4
           paddingLen <- fmap fromIntegral getWord8
 
-          let payloadLen = packetLen - paddingLen - 1
+          rest <- remaining
+          let payloadLen = rest - paddingLen
           payload <- label "payload" (isolate payloadLen getPayload)
           label "padding" (skip paddingLen)
 
@@ -179,7 +169,7 @@ getSshPacket Cipher{..} mac getPayload = label "SshPacket" $
           Right a  -> return (a,Cipher{cipherState=st',..})
           Left err -> fail err
 
-  genSig payloadLen =
-    do payload <- getBytes payloadLen
+  genSig =
+    do payload <- getBytes =<< remaining
        return (sign mac payload)
 

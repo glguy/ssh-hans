@@ -33,6 +33,12 @@ import           Data.IORef
 import           Data.Serialize
                      ( runPutLazy )
 
+c2s_cipher a b = snd (cipher_aes128_gcm a b)
+c2s_mac    = const mac_none
+
+s2c_cipher a b = fst (cipher_aes128_gcm a b)
+s2c_mac    = const mac_none -- mac_hmac_sha2_512
+
 -- Public API ------------------------------------------------------------------
 
 data Server = Server { sAccept :: IO Client
@@ -87,22 +93,16 @@ rsaAuthentication pubKey privKey makeToken =
 transitionKeys :: Keys -> SshState -> IO ()
 transitionKeys Keys { .. } SshState { .. } =
 
-  do let c2s_cipher = cipher_aes128_ctr
-         c2s_mac    = mac_hmac_sha2_256
-
-         s2c_cipher = cipher_aes128_cbc
-         s2c_mac    = mac_hmac_sha2_512
-
-     writeIORef sshDecC (snd (c2s_cipher (kpClientToServer kInitialIV)
-                                         (kpClientToServer kEncKey)))
+  do writeIORef sshDecC (c2s_cipher (kpClientToServer kInitialIV)
+                                    (kpClientToServer kEncKey))
 
      modifyIORef sshAuthC $ \ mac ->
        let mac' = c2s_mac (kpClientToServer kIntegKey)
         in mac `switch` mac'
 
      modifyMVar_ sshSendState $ \(_,mac) ->
-       let cipher = fst (s2c_cipher (kpServerToClient kInitialIV)
-                                    (kpServerToClient kEncKey))
+       let cipher = s2c_cipher (kpServerToClient kInitialIV)
+                               (kpServerToClient kEncKey)
            mac' = s2c_mac (kpServerToClient kIntegKey)
         in return (cipher, mac `switch` mac')
 
@@ -127,8 +127,8 @@ supportedKex kex cookie =
   SshKex
     { sshKexAlgs           = [ kexName kex ]
     , sshServerHostKeyAlgs = [ "ssh-rsa" ]
-    , sshEncAlgs           = SshAlgs [ "aes128-ctr" ] [ "aes128-cbc" ]
-    , sshMacAlgs           = SshAlgs [ "hmac-sha2-256" ] [ "hmac-sha2-512" ]
+    , sshEncAlgs           = SshAlgs [ cipherName (c2s_cipher """")] [ cipherName (s2c_cipher """")]
+    , sshMacAlgs           = SshAlgs [ mName (c2s_mac "") ] [ mName (s2c_mac "")]
     , sshCompAlgs          = SshAlgs [ "none" ] [ "none" ]
     , sshLanguages         = SshAlgs [] []
     , sshFirstKexFollows   = False

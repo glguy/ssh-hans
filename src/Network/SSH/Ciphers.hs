@@ -8,10 +8,10 @@ module Network.SSH.Ciphers (
   , blockSize
   , crypt
 
-  , cipher_none_dec
-  , cipher_none_enc
+  , cipher_none
   , cipher_aes128_cbc
   , cipher_aes128_ctr
+  , cipher_aes128_gcm
   ) where
 
 import qualified Data.ByteString as S
@@ -22,12 +22,17 @@ import           Crypto.Error
 import           Crypto.Cipher.AES
 import qualified Crypto.Cipher.Types as Cipher
 
-import           Data.Serialize ( putWord32be, runPut, getWord32be, runGet )
+import           Data.Serialize
+import           Data.Word
+import           Data.ByteArray (convert)
+import           Data.Monoid ((<>))
+import           Debug.Trace
 
 -- | A streaming cipher.
 data Cipher = forall st. Cipher
   { cipherName :: !S.ByteString
   , blockSize  :: !Int
+  , paddingSize :: Int -> Int
   , cipherState :: st
   , getLength  :: st -> S.ByteString -> Int
   , crypt      :: st -> S.ByteString -> (st, S.ByteString)
@@ -36,28 +41,16 @@ data Cipher = forall st. Cipher
 instance Show Cipher where
   show Cipher { .. } = S8.unpack cipherName
 
-addLength :: S.ByteString -> S.ByteString
-addLength bytes = S.append (runPut (putWord32be (fromIntegral (S.length bytes))))
-                           bytes
-
 -- Supported Ciphers -----------------------------------------------------------
 
-cipher_none_enc :: Cipher
-cipher_none_enc  =
-  Cipher { cipherName      = "none"
-         , blockSize = 8
-         , cipherState = ()
-         , crypt = \_ x -> ((), addLength x)
-         , getLength = \_ -> either undefined fromIntegral . runGet getWord32be
-         }
-
-cipher_none_dec :: Cipher
-cipher_none_dec  =
+cipher_none :: Cipher
+cipher_none  =
   Cipher { cipherName      = "none"
          , blockSize = 8
          , cipherState = ()
          , crypt = \_ x -> ((), x)
          , getLength = \_ -> either undefined fromIntegral . runGet getWord32be
+         , paddingSize = roundUp 8
          }
 
 cipher_aes128_cbc :: L.ByteString -- ^ IV
@@ -77,12 +70,14 @@ cipher_aes128_cbc initial_iv key = (enc_cipher, dec_cipher)
   enc_cipher =
     Cipher { cipherName  = "aes128-cbc"
            , blockSize   = ivSize
-           , crypt       = \iv bytes -> enc iv (addLength bytes)
+           , crypt       = enc
            , cipherState = iv0
            , getLength   = error "get length not supported for encryption"
+           , paddingSize = roundUp 16
            }
 
 
+  enc :: Cipher.IV AES128 -> S.ByteString -> (Cipher.IV AES128, S.ByteString)
   enc iv bytes = (iv', cipherText)
     where
     cipherText = Cipher.cbcEncrypt aesKey iv bytes
@@ -93,6 +88,7 @@ cipher_aes128_cbc initial_iv key = (enc_cipher, dec_cipher)
            , blockSize   = ivSize
            , cipherState = iv0
            , crypt       = dec
+           , paddingSize = roundUp 16
            , getLength   = \st block ->
                            either undefined fromIntegral
                          $ runGet getWord32be
@@ -125,8 +121,9 @@ cipher_aes128_ctr initial_iv key = (enc_cipher, dec_cipher)
   enc_cipher =
     Cipher { cipherName       = "aes128-ctr"
            , blockSize  = ivSize
-           , crypt       = \st bytes -> enc st (addLength bytes)
+           , crypt       = enc
            , cipherState = iv0
+           , paddingSize = roundUp 16
            , getLength   = \st block ->
                            either undefined fromIntegral
                          $ runGet getWord32be
@@ -139,6 +136,7 @@ cipher_aes128_ctr initial_iv key = (enc_cipher, dec_cipher)
            , blockSize  = ivSize
            , crypt       = enc
            , cipherState = iv0
+           , paddingSize = roundUp 16
            , getLength   = \st block ->
                            either undefined fromIntegral
                          $ runGet getWord32be
@@ -151,3 +149,90 @@ cipher_aes128_ctr initial_iv key = (enc_cipher, dec_cipher)
     cipherText = Cipher.ctrCombine aesKey iv bytes
     iv' = Cipher.ivAdd iv
         $ S.length bytes `quot` ivSize
+
+cipher_aes128_gcm ::
+  L.ByteString {- ^ IV stream -} ->
+  L.ByteString {- ^ Key stream -} ->
+  (Cipher,Cipher) {- ^ encrypt, decrypt -}
+cipher_aes128_gcm initial_iv key = (enc_cipher, dec_cipher)
+  where
+
+  aesKey :: AES128
+  CryptoPassed aesKey = Cipher.cipherInit (L.toStrict (L.take 16 key))
+
+  enc_cipher =
+    Cipher { cipherName  = "aes128-gcm@openssh.com"
+           , blockSize   = 16
+           , crypt       = enc
+           , cipherState = invocation_counter0
+           , paddingSize = roundUp 16 . subtract 4
+           , getLength   = undefined
+           }
+
+  dec_cipher =
+    Cipher { cipherName  = "aes128-gcm@openssh.com"
+           , blockSize   = 16
+           , crypt       = dec
+           , cipherState = invocation_counter0
+           , paddingSize = roundUp 16 . subtract 4
+           , getLength   = \_ block ->
+                           (+)16 -- get the tag, too
+                         $ either undefined fromIntegral
+                         $ runGet getWord32be block
+           }
+
+  Right (fixed, invocation_counter0) =
+           runGet (do x <- getWord32be
+                      y <- getWord64be
+                      return (x,y))
+                  (L.toStrict (L.take 12 initial_iv))
+
+  dec :: Word64 -> S.ByteString -> (Word64, S.ByteString) -- XXX: failable
+  dec invocation_counter input_text = (invocation_counter+1, len_part<>plain_text)
+    where
+    (len_part,input_text1) = S.splitAt 4 input_text
+    (cipher_text,auth_tag) = S.splitAt (S.length input_text1-16) input_text1
+
+    Just plain_text =
+      Cipher.aeadSimpleDecrypt
+        (mkAead invocation_counter)
+        len_part
+        cipher_text
+        (Cipher.AuthTag (convert auth_tag))
+
+  enc :: Word64 -> S.ByteString -> (Word64, S.ByteString)
+  enc invocation_counter input_text =
+    (invocation_counter+1, len_part<>cipher_text<>convert auth_tag)
+    where
+    (len_part,plain_text) = S.splitAt 4 input_text
+
+    (Cipher.AuthTag auth_tag, cipher_text) =
+      Cipher.aeadSimpleEncrypt
+        (mkAead invocation_counter)
+        len_part
+        plain_text
+        16
+
+  mkAead counter = aead
+    where
+    iv = runPut $ do putWord32be fixed
+                     putWord64be counter
+
+    CryptoPassed aead = Cipher.aeadInit Cipher.AEAD_GCM aesKey iv
+
+roundUp ::
+  Int {- ^ target multiple -} ->
+  Int {- ^ body length     -} ->
+  Int {- ^ padding length  -}
+roundUp align bytesLen = paddingLen
+  where
+  bytesRem   = (4 + 1 + bytesLen) `mod` align
+
+  -- number of bytes needed to align on block size
+  alignBytes | bytesRem == 0 = 0
+             | otherwise     = align - bytesRem
+
+  paddingLen | alignBytes == 0 =              align
+             | alignBytes <  4 = alignBytes + align
+             | otherwise       = alignBytes
+

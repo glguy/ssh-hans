@@ -3,6 +3,7 @@
 
 module Network.SSH.Mac (
     Mac()
+  , mName
   , SeqNum
   , sign
   , switch

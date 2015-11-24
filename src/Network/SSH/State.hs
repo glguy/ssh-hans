@@ -52,10 +52,10 @@ data SshState = SshState { sshDecC  :: !(IORef Cipher) -- ^ Client decryption co
 
 initialState :: IO SshState
 initialState  =
-  do sshDecC  <- newIORef cipher_none_dec
+  do sshDecC  <- newIORef cipher_none
      sshAuthC <- newIORef mac_none
      sshBuf   <- newIORef S.empty
-     sshSendState <- newMVar (cipher_none_enc, mac_none)
+     sshSendState <- newMVar (cipher_none, mac_none)
      return SshState { .. }
 
 send :: Client -> SshState -> SshMsg -> IO ()
