@@ -44,13 +44,13 @@ verifyPubKeyAuthentication
          in DSA.verify Hash.SHA1 pub sig token
 
       ("ecdsa-sha2-nistp256", SshPubEcDsaP256 pub, SshSigEcDsaP256 sig) ->
-        do let curve = ECC.getCurveByName ECC.SEC_p256r1
-           p <- pointFromBytes curve pub
-           let p' = ECC.PublicKey curve p
-           s <- eccSigFromBinary sig
-           return (ECC.verify Hash.SHA256 p' s token)
-        `catchCryptoFailure` \_ ->
-           False
+           ecdsaAuth ECC.SEC_p256r1 Hash.SHA256 pub sig token
+
+      ("ecdsa-sha2-nistp384", SshPubEcDsaP384 pub, SshSigEcDsaP384 sig) ->
+           ecdsaAuth ECC.SEC_p384r1 Hash.SHA384 pub sig token
+
+      ("ecdsa-sha2-nistp521", SshPubEcDsaP521 pub, SshSigEcDsaP521 sig) ->
+           ecdsaAuth ECC.SEC_p521r1 Hash.SHA512 pub sig token
 
       ("ssh-ed25519", SshPubEd25519 pub, SshSigEd25519 sig) ->
         do p <- Ed25519.publicKey pub
@@ -71,6 +71,16 @@ verifyPubKeyAuthentication
        putBoolean    True
        putString     publicKeyAlgorithm
        putString     (runPut (putSshPubCert publicKey))
+
+ecdsaAuth :: Hash.HashAlgorithm h => ECC.CurveName -> h -> S.ByteString -> S.ByteString -> S.ByteString -> Bool
+ecdsaAuth curveName hash pub sig token =
+  do let curve = ECC.getCurveByName curveName
+     p <- pointFromBytes curve pub
+     let p' = ECC.PublicKey curve p
+     s <- eccSigFromBinary sig
+     return (ECC.verify hash p' s token)
+  `catchCryptoFailure` \_ ->
+     False
 
 catchCryptoFailure :: CryptoFailable a -> (CryptoError -> a) -> a
 catchCryptoFailure m h = onCryptoFailure h id m

@@ -208,20 +208,26 @@ data SshKex = SshKex { sshCookie            :: !SshCookie
 data SshPubCert = SshPubDss !Integer !Integer !Integer !Integer -- ^ p q g y
                 | SshPubRsa !Integer !Integer -- ^ e n
                 | SshPubEcDsaP256 !S.ByteString
+                | SshPubEcDsaP384 !S.ByteString
+                | SshPubEcDsaP521 !S.ByteString
                 | SshPubEd25519 !S.ByteString
                 | SshPubOther !S.ByteString !S.ByteString
                   deriving (Show,Eq)
 
 sshPubCertName :: SshPubCert -> S.ByteString
-sshPubCertName SshPubDss {}      = "ssh-dss"
-sshPubCertName SshPubRsa {}      = "ssh-rsa"
+sshPubCertName SshPubDss       {} = "ssh-dss"
+sshPubCertName SshPubRsa       {} = "ssh-rsa"
 sshPubCertName SshPubEcDsaP256 {} = "ecdsa-sha2-nistp256"
-sshPubCertName SshPubEd25519 {}  = "ssh-ed25519"
+sshPubCertName SshPubEcDsaP384 {} = "ecdsa-sha2-nistp384"
+sshPubCertName SshPubEcDsaP521 {} = "ecdsa-sha2-nistp521"
+sshPubCertName SshPubEd25519   {} = "ssh-ed25519"
 sshPubCertName (SshPubOther n _) = n
 
 data SshSig = SshSigDss !Integer !Integer -- ^ r s
             | SshSigRsa !S.ByteString
             | SshSigEcDsaP256 !S.ByteString
+            | SshSigEcDsaP384 !S.ByteString
+            | SshSigEcDsaP521 !S.ByteString
             | SshSigEd25519 !S.ByteString
             | SshSigOther S.ByteString S.ByteString
               deriving (Show,Eq)
@@ -372,6 +378,16 @@ putSshPubCert (SshPubEcDsaP256 str) =
      putString "nistp256"
      putString str
 
+putSshPubCert (SshPubEcDsaP384 str) =
+  do putString "ecdsa-sha2-nistp384"
+     putString "nistp384"
+     putString str
+
+putSshPubCert (SshPubEcDsaP521 str) =
+  do putString "ecdsa-sha2-nistp521"
+     putString "nistp521"
+     putString str
+
 putSshPubCert (SshPubEd25519 str) =
   do putString "ssh-ed25519"
      putString str
@@ -395,6 +411,14 @@ putSshSig (SshSigRsa s) =
 
 putSshSig (SshSigEcDsaP256 s) =
   do putString "ecdsa-sha2-nistp256"
+     putString s
+
+putSshSig (SshSigEcDsaP384 s) =
+  do putString "ecdsa-sha2-nistp384"
+     putString s
+
+putSshSig (SshSigEcDsaP521 s) =
+  do putString "ecdsa-sha2-nistp521"
      putString s
 
 putSshSig (SshSigEd25519 s) =
@@ -612,6 +636,16 @@ getSshPubCert  = label "SshPubCert" $
             str <- getString
             return (SshPubEcDsaP256 str)
 
+       "ecdsa-sha2-nistp384" ->
+         do "nistp384" <- getString
+            str <- getString
+            return (SshPubEcDsaP384 str)
+
+       "ecdsa-sha2-nistp521" ->
+         do "nistp521" <- getString
+            str <- getString
+            return (SshPubEcDsaP521 str)
+
        "ssh-ed25519" ->
          do str <- getString
             return (SshPubEd25519 str)
@@ -637,6 +671,14 @@ getSshSig  = label "SshSig" $
        "ecdsa-sha2-nistp256" ->
          do s <- getString
             return (SshSigEcDsaP256 s)
+
+       "ecdsa-sha2-nistp384" ->
+         do s <- getString
+            return (SshSigEcDsaP384 s)
+
+       "ecdsa-sha2-nistp521" ->
+         do s <- getString
+            return (SshSigEcDsaP521 s)
 
        "ssh-ed25519" ->
          do s <- getString
