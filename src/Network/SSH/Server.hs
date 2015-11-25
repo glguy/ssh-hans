@@ -5,6 +5,7 @@
 module Network.SSH.Server (
 
     Server(..)
+  , ServerCredential
   , Client(..)
   , SessionEvent(..)
   , AuthResult(..)
@@ -23,11 +24,9 @@ import           Network.SSH.State
 import           Control.Concurrent
 import           Control.Monad (forever)
 import qualified Control.Exception as X
-import qualified Crypto.PubKey.RSA as RSA
-import qualified Crypto.PubKey.RSA.PKCS15 as RSA
-import qualified Crypto.Hash.Algorithms as Hash
 import           Crypto.Random (getRandomBytes)
 import qualified Data.ByteString.Char8 as S
+import           Data.List (find)
 import           Data.IORef
                      ( writeIORef, modifyIORef )
 import           Data.Serialize
@@ -41,26 +40,38 @@ s2c_mac    = const mac_none -- mac_hmac_sha2_512
 
 -- Public API ------------------------------------------------------------------
 
-data Server = Server { sAccept :: IO Client
-                     }
+type ServerCredential =
+  (S.ByteString, (SshPubCert -> S.ByteString) -> IO (SshSig, SshPubCert, S.ByteString))
 
-sshServer :: SshIdent -> Kex -> RSA.PrivateKey -> RSA.PublicKey -> Server -> IO ()
-sshServer v_s kex privKey pubKey sock = forever $
+data Server = Server
+  { sAccept :: IO Client
+  , sAuthenticationAlgs :: [ServerCredential]
+  , sKeyExchange :: Kex
+  , sIdent :: SshIdent
+  }
+
+sshServer :: Server -> IO ()
+sshServer sock = forever $
   do client <- sAccept sock
 
      forkIO $
        do state             <- initialState
+          let v_s            = sIdent sock
+              kex            = sKeyExchange sock
           v_c               <- sayHello state client v_s
-          (i_s, i_c)        <- startKex state client kex
+          (i_s, i_c)        <- startKex state client kex (map fst (sAuthenticationAlgs sock))
           (pub_c, pub_s, k) <- startDh client state kex
 
-          let makeToken cert = kexHash kex
-                             $ sshDhHash v_c v_s i_c i_s cert pub_c pub_s k
-
-          (sig, cert, token) <- rsaAuthentication pubKey privKey makeToken
+          hostKeyAlg <- case determineAlg sshServerHostKeyAlgs i_s i_c of
+                          Just alg -> return alg
+                          Nothing  -> fail "No host key algorithm selected"
+          (sig, cert, token) <-
+            case lookup hostKeyAlg (sAuthenticationAlgs sock) of
+              Nothing -> fail "Bad host key algorithm selected"
+              Just f -> f $ \ cert -> kexHash kex
+                                    $ sshDhHash v_c v_s i_c i_s cert pub_c pub_s k
 
           finishDh client state sig cert pub_s
-
           installSecurity client state kex token k
 
           -- Connection established!
@@ -77,17 +88,13 @@ sshServer v_s kex privKey pubKey sock = forever $
 
        `X.finally` cClose client
 
-rsaAuthentication ::
-  RSA.PublicKey ->
-  RSA.PrivateKey ->
-  (SshPubCert -> S.ByteString) ->
-  IO (SshSig, SshPubCert, S.ByteString)
-rsaAuthentication pubKey privKey makeToken =
-  do -- Extracted authentication step
-     let cert  = SshPubRsa (RSA.public_e pubKey) (RSA.public_n pubKey)
-         token = makeToken cert
-     Right rawsig <- RSA.signSafer (Just Hash.SHA1) privKey token
-     return (SshSigRsa rawsig, cert, token)
+-- | Select first client choice acceptable to the server
+determineAlg ::
+  (SshKex -> [S.ByteString]) {- ^ selector -} ->
+  SshKex {- ^ server -} ->
+  SshKex {- ^ client -} ->
+  Maybe S.ByteString
+determineAlg f server client = find (`elem` f server) (f client)
 
 -- | Install new keys (and algorithms) into the SshState.
 transitionKeys :: Keys -> SshState -> IO ()
@@ -122,11 +129,11 @@ sayHello state client v_s =
 nullKeys :: CipherKeys
 nullKeys = CipherKeys "" ""
 
-supportedKex :: Kex -> SshCookie -> SshKex
-supportedKex kex cookie =
+supportedKex :: Kex -> [S.ByteString] -> SshCookie -> SshKex
+supportedKex kex hostKeyAlgs cookie =
   SshKex
     { sshKexAlgs           = [ kexName kex ]
-    , sshServerHostKeyAlgs = [ "ssh-rsa" ]
+    , sshServerHostKeyAlgs = hostKeyAlgs
     , sshEncAlgs           = SshAlgs [ cipherName (c2s_cipher nullKeys)] [ cipherName (s2c_cipher nullKeys)]
     , sshMacAlgs           = SshAlgs [ mName (c2s_mac "") ] [ mName (s2c_mac "")]
     , sshCompAlgs          = SshAlgs [ "none" ] [ "none" ]
@@ -138,10 +145,10 @@ supportedKex kex cookie =
 newCookie :: IO SshCookie
 newCookie = fmap SshCookie (getRandomBytes 16)
 
-startKex :: SshState -> Client -> Kex -> IO (SshKex, SshKex)
-startKex state client kex =
+startKex :: SshState -> Client -> Kex -> [S.ByteString] -> IO (SshKex, SshKex)
+startKex state client kex hostKeyAlgs =
   do cookie <- newCookie
-     let i_s = supportedKex kex cookie
+     let i_s = supportedKex kex hostKeyAlgs cookie
 
      send client state (SshMsgKexInit i_s)
 

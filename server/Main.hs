@@ -19,6 +19,7 @@ import           Network
                      , accept, Socket )
 import           System.Directory ( doesFileExist )
 import           System.IO ( Handle, hClose )
+import           System.IO.Error (isDoesNotExistError)
 
 import System.Posix.IO ( fdToHandle, closeFd )
 import Control.Concurrent
@@ -28,7 +29,13 @@ import System.Directory (getHomeDirectory)
 import qualified SetGame
 import qualified Graphics.Vty as Vty
 
+import qualified Crypto.PubKey.Ed25519 as Ed25519
 import qualified Crypto.PubKey.RSA as RSA
+import qualified Crypto.PubKey.RSA.PKCS15 as RSA
+import qualified Crypto.Hash.Algorithms as Hash
+import Data.ByteArray (convert)
+import Crypto.Error (throwCryptoErrorIO)
+import Crypto.Random(getRandomBytes)
 
 import Openpty
 import UnixTerminalFlags
@@ -37,7 +44,10 @@ import LoadKeys
 main :: IO ()
 main = withSocketsDo $
   do sock             <- listenOn (PortNumber 2200)
-     (pubKey,privKey) <- loadKeys
+
+     myRsaAuth <- loadRsaAuth
+     myEdAuth  <- loadEdAuth
+     let sAuth = [myRsaAuth, myEdAuth]
 
      home    <- getHomeDirectory
      pubKeys <- loadPublicKeys (home </> ".ssh" </> "authorized_keys")
@@ -45,11 +55,12 @@ main = withSocketsDo $
      let creds = [(S8.pack user,pubKeys)]
 
      -- Currently hardcoded kex algorithm
-     -- let kex = ecdhSha2Nistp521
+     -- let kex = ecdhSha2Nistp256
      -- let kex = diffieHellmanGroup14Sha1
      let kex = curve25519sha256
 
-     sshServer greeting kex privKey pubKey (mkServer creds sock)
+
+     sshServer (mkServer kex sAuth creds sock)
 
 greeting :: SshIdent
 greeting  = SshIdent { sshProtoVersion    = "2.0"
@@ -57,8 +68,34 @@ greeting  = SshIdent { sshProtoVersion    = "2.0"
                      , sshComments        = ""
                      }
 
-mkServer :: Credentials -> Socket -> Server
-mkServer creds sock = Server { sAccept = mkClient creds `fmap` accept sock }
+mkServer :: Kex -> [ServerCredential] -> [ClientCredential] -> Socket -> Server
+mkServer kex auths creds sock = Server
+  { sAccept = mkClient creds `fmap` accept sock
+  , sAuthenticationAlgs = auths
+  , sKeyExchange = kex
+  , sIdent = greeting
+  }
+
+rsaAuth ::
+  RSA.PublicKey ->
+  RSA.PrivateKey ->
+  (SshPubCert -> S.ByteString) ->
+  IO (SshSig, SshPubCert, S.ByteString)
+rsaAuth pubKey privKey makeToken =
+  do let cert  = SshPubRsa (RSA.public_e pubKey) (RSA.public_n pubKey)
+         token = makeToken cert
+     Right rawsig <- RSA.signSafer (Just Hash.SHA1) privKey token
+     return (SshSigRsa rawsig, cert, token)
+
+edAuth ::
+  Ed25519.SecretKey -> Ed25519.PublicKey ->
+  (SshPubCert -> S.ByteString) ->
+  IO (SshSig, SshPubCert, S.ByteString)
+edAuth priv pub makeToken =
+  do let cert = SshPubEd25519 (convert pub)
+         token = makeToken cert
+         sig = Ed25519.sign priv pub token
+     return (SshSigEd25519 (convert sig), cert, token)
 
 convertWindowSize :: SshWindowSize -> Winsize
 convertWindowSize winsize =
@@ -69,16 +106,16 @@ convertWindowSize winsize =
     , wsYPixel = fromIntegral $ sshWsY    winsize
     }
 
-type Credentials = [(S.ByteString, [SshPubCert])]
+type ClientCredential = (S.ByteString, [SshPubCert])
 
-mkClient :: Credentials -> (Handle,HostName,PortNumber) -> Client
+mkClient :: [ClientCredential] -> (Handle,HostName,PortNumber) -> Client
 mkClient creds (h,_,_) = Client { .. }
   where
   cGet   = S.hGetSome h
   cPut   = S.hPutStr  h . L.toStrict
   cClose =   hClose   h
 
-  cOpenShell (term,winsize,termflags) eventChannel writeBytes =
+  cOpenShell term winsize termflags eventChannel writeBytes =
     do (masterFd, slaveFd) <-
          openpty
            Nothing
@@ -134,17 +171,36 @@ mkClient creds (h,_,_) = Client { .. }
     do print (user,m)
        return (AuthFailed ["publickey"])
 
-loadKeys :: IO (RSA.PublicKey, RSA.PrivateKey)
-loadKeys  =
+loadRsaAuth :: IO ServerCredential
+loadRsaAuth =
   do privExists <- doesFileExist "server.priv"
      pubExists  <- doesFileExist "server.pub"
 
-     if privExists && pubExists
-        then do pub  <- readFile "server.pub"
-                priv <- readFile "server.priv"
-                return (read pub, read priv) -- icky
+     (pub,priv) <-
+       if privExists && pubExists
+         then do pub  <- readFile "server.pub"
+                 priv <- readFile "server.priv"
+                 return (read pub, read priv) -- icky
 
-        else do pair@(pub, priv) <- RSA.generate 256{-bytes-} 0x10001{-e-}
-                writeFile "server.pub"  (show pub)
-                writeFile "server.priv" (show priv)
-                return pair
+         else do (pub, priv) <- RSA.generate 256{-bytes-} 0x10001{-e-}
+                 writeFile "server.pub"  (show pub)
+                 writeFile "server.priv" (show priv)
+                 return (pub,priv)
+
+     return ("ssh-rsa", rsaAuth pub priv)
+
+loadEdAuth :: IO ServerCredential
+loadEdAuth =
+  do res <- try (S.readFile "server.ed")
+     bytes <- case res of
+                Right bytes -> return bytes
+                Left e
+                  | isDoesNotExistError e ->
+                     do xs <- getRandomBytes 32
+                        S.writeFile "server.ed" xs
+                        return xs
+                  | otherwise -> throwIO e
+
+     priv <- throwCryptoErrorIO (Ed25519.secretKey bytes)
+     let pub = Ed25519.toPublic priv
+     return ("ssh-ed25519", edAuth priv pub)
