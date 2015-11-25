@@ -205,8 +205,8 @@ data SshKex = SshKex { sshCookie            :: !SshCookie
                      , sshFirstKexFollows   :: Bool
                      } deriving (Show,Eq)
 
-data SshPubCert = SshPubDss !Integer !Integer !Integer !Integer
-                | SshPubRsa !Integer !Integer
+data SshPubCert = SshPubDss !Integer !Integer !Integer !Integer -- ^ p q g y
+                | SshPubRsa !Integer !Integer -- ^ e n
                 | SshPubEcDsaP256 !S.ByteString
                 | SshPubEd25519 !S.ByteString
                 | SshPubOther !S.ByteString !S.ByteString
@@ -219,7 +219,7 @@ sshPubCertName SshPubEcDsaP256 {} = "ecdsa-sha2-nistp256"
 sshPubCertName SshPubEd25519 {}  = "ssh-ed25519"
 sshPubCertName (SshPubOther n _) = n
 
-data SshSig = SshSigDss !Integer !Integer
+data SshSig = SshSigDss !Integer !Integer -- ^ r s
             | SshSigRsa !S.ByteString
             | SshSigEcDsaP256 !S.ByteString
             | SshSigEd25519 !S.ByteString
@@ -385,6 +385,7 @@ putSshSig :: Putter SshSig
 
 putSshSig (SshSigDss r s) =
   do putString "ssh-dss"
+     putWord32be 40
      putUnsigned 20 r
      putUnsigned 20 s
 
@@ -624,7 +625,8 @@ getSshSig  = label "SshSig" $
   do name <- getString
      case name of
        "ssh-dss" ->
-         do r <- getUnsigned (160 `div` 8)
+         do 40 <- getWord32be
+            r <- getUnsigned (160 `div` 8)
             s <- getUnsigned (160 `div` 8)
             return (SshSigDss r s)
 

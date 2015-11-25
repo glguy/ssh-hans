@@ -11,6 +11,7 @@ import qualified Data.ByteString as S
 import qualified Crypto.PubKey.Ed25519 as Ed25519
 import qualified Crypto.PubKey.RSA as RSA
 import qualified Crypto.PubKey.RSA.PKCS15 as RSA
+import qualified Crypto.PubKey.DSA as DSA
 import qualified Crypto.PubKey.ECC.ECDSA as ECC
 import qualified Crypto.PubKey.ECC.Types as ECC
 import qualified Crypto.Hash.Algorithms as Hash
@@ -31,6 +32,16 @@ verifyPubKeyAuthentication
 
       ("ssh-rsa", SshPubRsa e n, SshSigRsa s) ->
         RSA.verify (Just Hash.SHA1) (RSA.PublicKey (S.length s) n e) token s
+
+      ("ssh-dss", SshPubDss p q g y, SshSigDss r s) ->
+        let params = DSA.Params { DSA.params_p = p
+                                , DSA.params_q = q
+                                , DSA.params_g = g }
+            pub = DSA.PublicKey { DSA.public_params = params
+                                , DSA.public_y = y }
+            sig = DSA.Signature { DSA.sign_r = r
+                                , DSA.sign_s = s }
+         in DSA.verify Hash.SHA1 pub sig token
 
       ("ecdsa-sha2-nistp256", SshPubEcDsaP256 pub, SshSigEcDsaP256 sig) ->
         do let curve = ECC.getCurveByName ECC.SEC_p256r1
