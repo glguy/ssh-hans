@@ -31,7 +31,7 @@ verifyPubKeyAuthentication
     case (publicKeyAlgorithm, publicKey, signature) of
 
       ("ssh-rsa", SshPubRsa e n, SshSigRsa s) ->
-        RSA.verify (Just Hash.SHA1) (RSA.PublicKey (S.length s) n e) token s
+        RSA.verify (Just Hash.SHA1) (RSA.PublicKey (octetSize n) n e) token s
 
       ("ssh-dss", SshPubDss p q g y, SshSigDss r s) ->
         let params = DSA.Params { DSA.params_p = p
@@ -71,6 +71,15 @@ verifyPubKeyAuthentication
        putBoolean    True
        putString     publicKeyAlgorithm
        putString     (runPut (putSshPubCert publicKey))
+
+-- | The length of the modulus n in octets is the integer k satisfying
+-- 2^(8(k-1)) <= n < 2^(8k)
+octetSize :: Integer -> Int
+octetSize = aux 0
+  where
+  aux acc n
+    | n <= 0 = acc
+    | otherwise = aux (acc+1) (n`quot`256)
 
 ecdsaAuth :: Hash.HashAlgorithm h => ECC.CurveName -> h -> S.ByteString -> S.ByteString -> S.ByteString -> Bool
 ecdsaAuth curveName hash pub sig token =
