@@ -81,7 +81,14 @@ octetSize = aux 0
     | n <= 0 = acc
     | otherwise = aux (acc+1) (n`quot`256)
 
-ecdsaAuth :: Hash.HashAlgorithm h => ECC.CurveName -> h -> S.ByteString -> S.ByteString -> S.ByteString -> Bool
+ecdsaAuth ::
+  Hash.HashAlgorithm h =>
+  ECC.CurveName {- ^ curve used for signature       -} ->
+  h             {- ^ hash used in verification      -} ->
+  S.ByteString  {- ^ uncompressed encoding of point -} ->
+  S.ByteString  {- ^ encoded signature              -} ->
+  S.ByteString  {- ^ message to verify              -} ->
+  Bool          {- ^ success when true -}
 ecdsaAuth curveName hash pub sig token =
   do let curve = ECC.getCurveByName curveName
      p <- pointFromBytes curve pub
