@@ -33,10 +33,10 @@ import           Data.IORef
 import           Data.Serialize
                      ( runPutLazy )
 
-c2s_cipher = cipher_aes128_gcm
+c2s_cipher = chacha20_poly1305 -- cipher_aes128_gcm
 c2s_mac    = const mac_none
 
-s2c_cipher = cipher_aes128_gcm
+s2c_cipher = chacha20_poly1305 -- cipher_aes128_gcm
 s2c_mac    = const mac_none -- mac_hmac_sha2_512
 
 -- Public API ------------------------------------------------------------------
@@ -93,16 +93,16 @@ rsaAuthentication pubKey privKey makeToken =
 transitionKeys :: Keys -> SshState -> IO ()
 transitionKeys Keys { .. } SshState { .. } =
 
-  do writeIORef sshDecC (c2s_cipher k_c2s_cipherKeys)
+  do modifyIORef sshRecvState $ \(seqNum, _, _) ->
+               ( seqNum
+               , c2s_cipher k_c2s_cipherKeys
+               , c2s_mac    k_c2s_integKey)
 
-     modifyIORef sshAuthC $ \ mac ->
-       let mac' = c2s_mac k_c2s_integKey
-        in mac `switch` mac'
-
-     modifyMVar_ sshSendState $ \(_,mac) ->
-       let cipher = s2c_cipher k_s2c_cipherKeys
-           mac' = s2c_mac k_s2c_integKey
-        in return (cipher, mac `switch` mac')
+     modifyMVar_ sshSendState $ \(seqNum,_,_) ->
+        return ( seqNum
+               , s2c_cipher k_s2c_cipherKeys
+               , s2c_mac    k_s2c_integKey
+               )
 
      putStrLn "New keys installed."
 

@@ -9,6 +9,7 @@ module Network.SSH.Ciphers (
   , cipher_aes128_cbc
   , cipher_aes128_ctr
   , cipher_aes128_gcm
+  , chacha20_poly1305
   ) where
 
 import qualified Data.ByteString as S
@@ -18,6 +19,8 @@ import qualified Data.ByteString.Lazy as L
 import           Crypto.Error
 import           Crypto.Cipher.AES
 import qualified Crypto.Cipher.Types as Cipher
+import qualified Crypto.Cipher.ChaCha as C
+import qualified Crypto.MAC.Poly1305 as Poly
 
 import           Control.Applicative
 import           Data.Serialize
@@ -33,9 +36,9 @@ data Cipher = forall st. Cipher
   , blockSize   :: !Int
   , paddingSize :: Int -> Int
   , cipherState :: st
-  , getLength   :: st -> S.ByteString -> Int
-  , encrypt     :: st -> S.ByteString -> (st, S.ByteString)
-  , decrypt     :: st -> S.ByteString -> (st, S.ByteString)
+  , getLength   :: Word32 -> st -> S.ByteString -> Int
+  , encrypt     :: Word32 -> st -> S.ByteString -> (st, S.ByteString)
+  , decrypt     :: Word32 -> st -> S.ByteString -> (st, S.ByteString)
   }
 
 instance Show Cipher where
@@ -51,9 +54,9 @@ cipher_none  =
   Cipher { cipherName      = "none"
          , blockSize = 8
          , cipherState = ()
-         , encrypt = \_ x -> ((), x)
-         , decrypt = \_ x -> ((), x)
-         , getLength = \_ -> either undefined fromIntegral . runGet getWord32be
+         , encrypt = \_ _ x -> ((), x)
+         , decrypt = \_ _ x -> ((), x)
+         , getLength = \_ _ -> either undefined fromIntegral . runGet getWord32be
          , paddingSize = roundUp 8
          }
 
@@ -76,21 +79,21 @@ cipher_aes128_cbc CipherKeys { ckInitialIV = initial_iv, ckEncKey = key } = ciph
            , decrypt     = dec
            , cipherState = iv0
            , paddingSize = roundUp 16
-           , getLength   = \st block ->
+           , getLength   = \seqNum st block ->
                            either undefined fromIntegral
                          $ runGet getWord32be
                          $ snd -- ignore new state
-                         $ dec st block
+                         $ dec seqNum st block
            }
 
-  enc :: Cipher.IV AES128 -> S.ByteString -> (Cipher.IV AES128, S.ByteString)
-  enc iv bytes = (iv', cipherText)
+  enc :: Word32 -> Cipher.IV AES128 -> S.ByteString -> (Cipher.IV AES128, S.ByteString)
+  enc _ iv bytes = (iv', cipherText)
     where
     cipherText = Cipher.cbcEncrypt aesKey iv bytes
     Just iv' = Cipher.makeIV (S.drop (S.length bytes - ivSize) cipherText)
 
-  dec :: Cipher.IV AES128 -> S.ByteString -> (Cipher.IV AES128, S.ByteString)
-  dec iv cipherText = (iv', bytes)
+  dec :: Word32 -> Cipher.IV AES128 -> S.ByteString -> (Cipher.IV AES128, S.ByteString)
+  dec _ iv cipherText = (iv', bytes)
     where
     bytes = Cipher.cbcDecrypt aesKey iv cipherText
     Just iv' = Cipher.makeIV
@@ -116,14 +119,14 @@ cipher_aes128_ctr CipherKeys { ckInitialIV = initial_iv, ckEncKey = key } = ciph
            , decrypt     = enc
            , cipherState = iv0
            , paddingSize = roundUp 16
-           , getLength   = \st block ->
+           , getLength   = \seqNum st block ->
                            either undefined fromIntegral
                          $ runGet getWord32be
                          $ snd -- ignore new state
-                         $ enc st block
+                         $ enc seqNum st block
            }
 
-  enc iv bytes = (iv', cipherText)
+  enc _ iv bytes = (iv', cipherText)
     where
     cipherText = Cipher.ctrCombine aesKey iv bytes
     iv' = Cipher.ivAdd iv
@@ -149,7 +152,7 @@ cipher_aes128_gcm CipherKeys { ckInitialIV = initial_iv, ckEncKey = key } = ciph
            , decrypt     = dec
            , cipherState = invocation_counter0
            , paddingSize = roundUp aesBlockSize . subtract lenLen
-           , getLength   = \_ block ->
+           , getLength   = \_ _ block ->
                            (+) tagLen -- get the tag, too
                          $ either undefined fromIntegral
                          $ runGet getWord32be block
@@ -166,8 +169,8 @@ cipher_aes128_gcm CipherKeys { ckInitialIV = initial_iv, ckEncKey = key } = ciph
     $ runPut
     $ putWord32be fixed >> putWord64be counter
 
-  dec :: Word64 -> S.ByteString -> (Word64, S.ByteString) -- XXX: failable
-  dec invocation_counter input_text = (invocation_counter+1, len_part<>plain_text)
+  dec :: Word32 -> Word64 -> S.ByteString -> (Word64, S.ByteString) -- XXX: failable
+  dec _ invocation_counter input_text = (invocation_counter+1, len_part<>plain_text)
     where
     (len_part,(cipher_text,auth_tag))
          = fmap (S.splitAt (S.length input_text-(tagLen+lenLen)))
@@ -178,8 +181,8 @@ cipher_aes128_gcm CipherKeys { ckInitialIV = initial_iv, ckEncKey = key } = ciph
         (mkAead invocation_counter) len_part cipher_text
         (Cipher.AuthTag (convert auth_tag))
 
-  enc :: Word64 -> S.ByteString -> (Word64, S.ByteString)
-  enc invocation_counter input_text =
+  enc :: Word32 -> Word64 -> S.ByteString -> (Word64, S.ByteString)
+  enc _ invocation_counter input_text =
     (invocation_counter+1, S.concat [len_part,cipher_text,convert auth_tag])
     where
     (len_part,plain_text) = S.splitAt lenLen input_text
@@ -187,6 +190,86 @@ cipher_aes128_gcm CipherKeys { ckInitialIV = initial_iv, ckEncKey = key } = ciph
     (Cipher.AuthTag auth_tag, cipher_text) =
       Cipher.aeadSimpleEncrypt (mkAead invocation_counter) len_part plain_text tagLen
 
+------------------------------------------------------------------------
+
+-- | Implementation of the cipher-auth mode specified in PROTOCOL.chacha20poly1305
+chacha20_poly1305 :: CipherKeys -> Cipher
+chacha20_poly1305 CipherKeys { ckEncKey = key } = Cipher
+  { cipherName  = "chacha20-poly1305@openssh.com"
+  , blockSize   = 4 -- bytes needed to decrypt length field
+  , encrypt     = enc
+  , decrypt     = dec
+  , cipherState = ()
+  , paddingSize = roundUp 8 . subtract 4
+  , getLength   = getLen
+  }
+
+  where
+  (payloadKey', lenKey') = fmap (L.take 32) (L.splitAt 32 key)
+  payloadKey = L.toStrict payloadKey'
+  lenKey     = L.toStrict lenKey'
+
+  mkNonce = runPut . putWord64be . fromIntegral
+
+  getLen :: Word32 -> () -> S.ByteString -> Int
+  getLen seqNr _ input_text = fromIntegral n + 16{-tag-}
+    where
+    st = C.initialize 20 lenKey (mkNonce seqNr)
+    Right n = runGet getWord32be
+            $ fst
+            $ C.combine st input_text
+
+  dec ::
+    Word32             {- ^ sequence number          -} ->
+    ()                 {- ^ cipher state             -} ->
+    S.ByteString       {- ^ len_ct || body_ct || mac -} ->
+    ((), S.ByteString) {- ^ dummy  || body_pt        -}
+  dec seqNr _ input_text
+    | computed_mac == expected_mac = ((), dummy_body_pt)
+    | otherwise                    = error "bad poly1305 tag"
+    where
+    nonce               = mkNonce seqNr
+
+    dummy_len           = S.replicate 4 0
+    dummy_body_pt       = dummy_len <> body_pt
+
+    len_body_len        = S.length input_text - macLen
+    (len_body_ct, expected_mac) = S.splitAt len_body_len input_text
+    computed_mac        = convert (Poly.auth polyKey len_body_ct)
+
+    body_ct             = S.drop lenLen len_body_ct
+    st0                 = C.initialize rounds payloadKey nonce
+    (polyKey,  st1)     = C.generate st0 polyKeySize :: (S.ByteString, C.State)
+    (_discard, st2)     = C.generate st1 discardSize :: (S.ByteString, C.State)
+    (body_pt , _  )     = C.combine  st2 body_ct     :: (S.ByteString, C.State)
+
+  rounds          = 20 -- chacha rounds
+  polyKeySize     = 32 -- key size for poly1305 algorithm
+  discardSize     = 32 -- aligns ciphertext to block counter 1
+  lenLen          =  4 -- length of packet_len
+  macLen          = 16 -- length of poly1305 mac
+
+  enc ::
+    Word32             {- ^ sequence number          -} ->
+    ()                 {- ^ cipher state             -} ->
+    S.ByteString       {- ^ len_pt || body_pt        -} ->
+    ((), S.ByteString) {- ^ len_ct || body_ct || mac -}
+  enc seqNr _ input_pt = ((), len_body_ct <> mac)
+    where
+    nonce               = mkNonce seqNr
+
+    (len_pt, body_pt)   = S.splitAt lenLen input_pt
+    (len_ct, _      )   = C.combine (C.initialize rounds lenKey nonce) len_pt
+
+    len_body_ct         = len_ct <> body_ct
+    mac                 = convert (Poly.auth polyKey len_body_ct)
+
+    st0                 = C.initialize rounds payloadKey nonce
+    (polyKey,  st1)     = C.generate st0 polyKeySize :: (S.ByteString, C.State)
+    (_discard, st2)     = C.generate st1 discardSize :: (S.ByteString, C.State)
+    (body_ct , _  )     = C.combine  st2 body_pt     :: (S.ByteString, C.State)
+
+------------------------------------------------------------------------
 
 roundUp ::
   Int {- ^ target multiple -} ->

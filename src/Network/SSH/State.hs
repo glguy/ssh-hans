@@ -44,40 +44,37 @@ data Client = Client { cGet         :: Int -> IO S.ByteString
                      }
 
 
-data SshState = SshState { sshDecC  :: !(IORef Cipher) -- ^ Client decryption context
-                         , sshAuthC :: !(IORef Mac)    -- ^ Client authentication context
-                         , sshBuf   :: !(IORef S.ByteString)
-                         , sshSendState :: !(MVar (Cipher, Mac)) -- ^ Server encryption context
-                         }
+data SshState = SshState
+  { sshRecvState :: !(IORef (Word32, Cipher,Mac)) -- ^ Client context
+  , sshBuf       :: !(IORef S.ByteString)
+  , sshSendState :: !(MVar (Word32, Cipher, Mac)) -- ^ Server encryption context
+  }
 
 initialState :: IO SshState
 initialState  =
-  do sshDecC  <- newIORef cipher_none
-     sshAuthC <- newIORef mac_none
-     sshBuf   <- newIORef S.empty
-     sshSendState <- newMVar (cipher_none, mac_none)
+  do sshRecvState <- newIORef (0,cipher_none,mac_none)
+     sshSendState <- newMVar (0,cipher_none, mac_none)
+     sshBuf       <- newIORef S.empty
      return SshState { .. }
 
 send :: Client -> SshState -> SshMsg -> IO ()
 send client SshState { .. } msg =
-  modifyMVar_ sshSendState $ \(cipher, mac) ->
-    do let (pkt,cipher',mac') = putSshPacket cipher mac (putSshMsg msg)
+  modifyMVar_ sshSendState $ \(seqNum, cipher, mac) ->
+    do let (pkt,cipher') = putSshPacket seqNum cipher mac (putSshMsg msg)
        cPut client pkt
-       return (cipher', mac')
+       return (seqNum+1, cipher',mac)
 
 
 receive :: Client -> SshState -> IO SshMsg
 receive client SshState { .. } = loop
   where
   loop =
-    do cipher <- readIORef sshDecC
-       mac    <- readIORef sshAuthC
-       res    <- parseFrom client sshBuf (getSshPacket cipher mac getSshMsg)
+    do (seqNum, cipher, mac) <- readIORef sshRecvState
+       res <- parseFrom client sshBuf (getSshPacket seqNum cipher mac getSshMsg)
        case res of
 
-         Right (msg, cipher', mac') ->
-           do writeIORef sshDecC  cipher'
-              writeIORef sshAuthC mac'
+         Right (msg, cipher') ->
+           do writeIORef sshRecvState (seqNum+1, cipher', mac)
               case msg of
                 SshMsgIgnore _                      -> loop
                 SshMsgDebug display m _ | display   -> S8.putStrLn m >> loop

@@ -4,9 +4,7 @@
 module Network.SSH.Mac (
     Mac()
   , mName
-  , SeqNum
   , sign
-  , switch
 
   , mac_none
   , mac_hmac_sha1
@@ -24,10 +22,7 @@ import qualified Crypto.Hash as Hash
 import           Data.ByteArray (convert)
 
 
-type SeqNum = Word32
-
 data Mac = Mac { mName       :: !S.ByteString
-               , mNextSeqNum :: !SeqNum
                , mFunction   :: S.ByteString -> S.ByteString
                }
 
@@ -35,15 +30,10 @@ instance Show Mac where
   show Mac { .. } = S.unpack mName
 
 -- | Sign a packet, yielding out a signature, and the new Mac to use.
-sign :: Mac -> S.ByteString -> (S.ByteString,Mac)
-sign Mac { .. } bytes = (sig, Mac { mNextSeqNum = mNextSeqNum + 1, .. })
+sign :: Word32 -> Mac -> S.ByteString -> S.ByteString
+sign seqNum Mac { .. } bytes = sig
   where
-  sig = mFunction (runPut (putWord32be mNextSeqNum >> putByteString bytes))
-
-
--- | Migrate from one mac to another, in the case of a rekey.
-switch :: Mac -> Mac -> Mac
-switch oldMac newMac = newMac { mNextSeqNum = mNextSeqNum oldMac }
+  sig = mFunction (runPut (putWord32be seqNum >> putByteString bytes))
 
 
 -- Algorithms ------------------------------------------------------------------
@@ -51,7 +41,6 @@ switch oldMac newMac = newMac { mNextSeqNum = mNextSeqNum oldMac }
 mac_none :: Mac
 mac_none  =
   Mac { mName       = "none"
-      , mNextSeqNum = 0
       , mFunction   = const S.empty
       }
 
@@ -65,7 +54,6 @@ mk_mac_hmac h name = \keyStream ->
   let keySize = fromIntegral (Hash.hashDigestSize h)
       key = L.toStrict (L.take keySize keyStream) in
   Mac { mName       = name
-      , mNextSeqNum = 0
       , mFunction   = convert . hmac' h key
       }
 
