@@ -196,25 +196,26 @@ cipher_aes128_gcm CipherKeys { ckInitialIV = initial_iv, ckEncKey = key } = ciph
 chacha20_poly1305 :: CipherKeys -> Cipher
 chacha20_poly1305 CipherKeys { ckEncKey = key } = Cipher
   { cipherName  = "chacha20-poly1305@openssh.com"
-  , blockSize   = 4 -- bytes needed to decrypt length field
+  , blockSize   = lenLen -- bytes needed to decrypt length field
   , encrypt     = enc
   , decrypt     = dec
   , cipherState = ()
-  , paddingSize = roundUp 8 . subtract 4
+  , paddingSize = roundUp 8 . subtract lenLen
   , getLength   = getLen
   }
 
   where
-  (payloadKey', lenKey') = fmap (L.take 32) (L.splitAt 32 key)
+  (payloadKey', lenKey') = fmap (L.take chachaKeySize)
+                                (L.splitAt chachaKeySize key)
   payloadKey = L.toStrict payloadKey'
   lenKey     = L.toStrict lenKey'
 
   mkNonce = runPut . putWord64be . fromIntegral
 
   getLen :: Word32 -> () -> S.ByteString -> Int
-  getLen seqNr _ input_text = fromIntegral n + 16{-tag-}
+  getLen seqNr _ input_text = fromIntegral n + macLen
     where
-    st = C.initialize 20 lenKey (mkNonce seqNr)
+    st = C.initialize rounds lenKey (mkNonce seqNr)
     Right n = runGet getWord32be
             $ fst
             $ C.combine st input_text
@@ -230,7 +231,7 @@ chacha20_poly1305 CipherKeys { ckEncKey = key } = Cipher
     where
     nonce               = mkNonce seqNr
 
-    dummy_len           = S.replicate 4 0
+    dummy_len           = S.replicate lenLen 0
     dummy_body_pt       = dummy_len <> body_pt
 
     len_body_len        = S.length input_text - macLen
@@ -244,6 +245,7 @@ chacha20_poly1305 CipherKeys { ckEncKey = key } = Cipher
     (body_pt , _  )     = C.combine  st2 body_ct     :: (S.ByteString, C.State)
 
   rounds          = 20 -- chacha rounds
+  chachaKeySize   = 32 -- key size for chacha algorithm
   polyKeySize     = 32 -- key size for poly1305 algorithm
   discardSize     = 32 -- aligns ciphertext to block counter 1
   lenLen          =  4 -- length of packet_len
