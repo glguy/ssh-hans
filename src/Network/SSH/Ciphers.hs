@@ -1,3 +1,4 @@
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE RecordWildCards #-}
@@ -6,9 +7,17 @@ module Network.SSH.Ciphers (
     Cipher(..)
 
   , cipher_none
+
   , cipher_aes128_cbc
+  , cipher_aes192_cbc
+  , cipher_aes256_cbc
+
   , cipher_aes128_ctr
+  , cipher_aes192_ctr
+  , cipher_aes256_ctr
+
   , cipher_aes128_gcm
+  , cipher_aes256_gcm
   , chacha20_poly1305
   ) where
 
@@ -60,25 +69,51 @@ cipher_none  =
          , paddingSize = roundUp 8
          }
 
+data CipherName a = CipherName S.ByteString
+
+cipher_aes128_gcm :: CipherKeys -> Cipher
+cipher_aes128_gcm = mk_cipher_gcm (CipherName "aes128-gcm@openssh.com" :: CipherName AES128)
+
+cipher_aes256_gcm :: CipherKeys -> Cipher
+cipher_aes256_gcm = mk_cipher_gcm (CipherName "aes256-gcm@openssh.com" :: CipherName AES256)
+
 cipher_aes128_cbc :: CipherKeys -> Cipher
-cipher_aes128_cbc CipherKeys { ckInitialIV = initial_iv, ckEncKey = key } = cipher
+cipher_aes128_cbc = mk_cipher_cbc (CipherName "aes128-cbc" :: CipherName AES128)
+
+cipher_aes192_cbc :: CipherKeys -> Cipher
+cipher_aes192_cbc = mk_cipher_cbc (CipherName "aes192-cbc" :: CipherName AES192)
+
+cipher_aes256_cbc :: CipherKeys -> Cipher
+cipher_aes256_cbc = mk_cipher_cbc (CipherName "aes256-cbc" :: CipherName AES256)
+
+cipher_aes128_ctr :: CipherKeys -> Cipher
+cipher_aes128_ctr = mk_cipher_ctr (CipherName "aes128-ctr" :: CipherName AES128)
+
+cipher_aes192_ctr :: CipherKeys -> Cipher
+cipher_aes192_ctr = mk_cipher_ctr (CipherName "aes192-ctr" :: CipherName AES192)
+
+cipher_aes256_ctr :: CipherKeys -> Cipher
+cipher_aes256_ctr = mk_cipher_ctr (CipherName "aes256-ctr" :: CipherName AES256)
+
+mk_cipher_cbc :: forall cipher. Cipher.BlockCipher cipher => CipherName cipher -> CipherKeys -> Cipher
+mk_cipher_cbc (CipherName name) CipherKeys { ckInitialIV = initial_iv, ckEncKey = key } = cipher
   where
 
-  aesKey :: AES128
+  aesKey :: cipher
   CryptoPassed aesKey = Cipher.cipherInit (grab keySize key)
   Cipher.KeySizeFixed keySize = Cipher.cipherKeySize aesKey
 
-  iv0    :: Cipher.IV AES128
+  iv0    :: Cipher.IV cipher
   Just iv0 = Cipher.makeIV (grab ivSize initial_iv)
   ivSize  = Cipher.blockSize aesKey
 
   cipher =
-    Cipher { cipherName  = "aes128-cbc"
+    Cipher { cipherName  = name
            , blockSize   = ivSize
            , encrypt     = enc
            , decrypt     = dec
            , cipherState = iv0
-           , paddingSize = roundUp 16
+           , paddingSize = roundUp ivSize
            , getLength   = \seqNum st block ->
                            either undefined fromIntegral
                          $ runGet getWord32be
@@ -86,13 +121,13 @@ cipher_aes128_cbc CipherKeys { ckInitialIV = initial_iv, ckEncKey = key } = ciph
                          $ dec seqNum st block
            }
 
-  enc :: Word32 -> Cipher.IV AES128 -> S.ByteString -> (Cipher.IV AES128, S.ByteString)
+  enc :: Word32 -> Cipher.IV cipher -> S.ByteString -> (Cipher.IV cipher, S.ByteString)
   enc _ iv bytes = (iv', cipherText)
     where
     cipherText = Cipher.cbcEncrypt aesKey iv bytes
     Just iv' = Cipher.makeIV (S.drop (S.length bytes - ivSize) cipherText)
 
-  dec :: Word32 -> Cipher.IV AES128 -> S.ByteString -> (Cipher.IV AES128, S.ByteString)
+  dec :: Word32 -> Cipher.IV cipher -> S.ByteString -> (Cipher.IV cipher, S.ByteString)
   dec _ iv cipherText = (iv', bytes)
     where
     bytes = Cipher.cbcDecrypt aesKey iv cipherText
@@ -100,25 +135,25 @@ cipher_aes128_cbc CipherKeys { ckInitialIV = initial_iv, ckEncKey = key } = ciph
              $ S.drop (S.length cipherText - ivSize)
              $ cipherText
 
-cipher_aes128_ctr :: CipherKeys -> Cipher
-cipher_aes128_ctr CipherKeys { ckInitialIV = initial_iv, ckEncKey = key } = cipher
+mk_cipher_ctr :: forall cipher. Cipher.BlockCipher cipher => CipherName cipher -> CipherKeys -> Cipher
+mk_cipher_ctr (CipherName name) CipherKeys { ckInitialIV = initial_iv, ckEncKey = key } = cipher
   where
 
-  aesKey :: AES128
+  aesKey :: cipher
   CryptoPassed aesKey = Cipher.cipherInit (grab keySize key)
   Cipher.KeySizeFixed keySize = Cipher.cipherKeySize aesKey
 
-  iv0    :: Cipher.IV AES128
+  iv0    :: Cipher.IV cipher
   Just iv0 = Cipher.makeIV (grab ivSize initial_iv)
   ivSize  = Cipher.blockSize aesKey
 
   cipher =
-    Cipher { cipherName  = "aes128-ctr"
+    Cipher { cipherName  = name
            , blockSize   = ivSize
            , encrypt     = enc
            , decrypt     = enc
            , cipherState = iv0
-           , paddingSize = roundUp 16
+           , paddingSize = roundUp ivSize
            , getLength   = \seqNum st block ->
                            either undefined fromIntegral
                          $ runGet getWord32be
@@ -132,21 +167,21 @@ cipher_aes128_ctr CipherKeys { ckInitialIV = initial_iv, ckEncKey = key } = ciph
     iv' = Cipher.ivAdd iv
         $ S.length bytes `quot` ivSize
 
-cipher_aes128_gcm :: CipherKeys -> Cipher
-cipher_aes128_gcm CipherKeys { ckInitialIV = initial_iv, ckEncKey = key } = cipher
+mk_cipher_gcm :: forall cipher. Cipher.BlockCipher cipher => CipherName cipher -> CipherKeys -> Cipher
+mk_cipher_gcm (CipherName name) CipherKeys { ckInitialIV = initial_iv, ckEncKey = key } = cipher
   where
   lenLen, ivLen, tagLen :: Int
   lenLen = 4
   ivLen = 12
   tagLen = 16
 
-  aesKey :: AES128
+  aesKey :: cipher
   CryptoPassed aesKey         = Cipher.cipherInit $ grab keySize key
   Cipher.KeySizeFixed keySize = Cipher.cipherKeySize aesKey
   aesBlockSize                = Cipher.blockSize aesKey
 
   cipher =
-    Cipher { cipherName  = "aes128-gcm@openssh.com"
+    Cipher { cipherName  = name
            , blockSize   = aesBlockSize
            , encrypt     = enc
            , decrypt     = dec
@@ -162,7 +197,7 @@ cipher_aes128_gcm CipherKeys { ckInitialIV = initial_iv, ckEncKey = key } = ciph
     runGet (liftA2 (,) getWord32be getWord64be)
            (grab ivLen initial_iv)
 
-  mkAead :: Word64 -> Cipher.AEAD AES128
+  mkAead :: Word64 -> Cipher.AEAD cipher
   mkAead counter
     = throwCryptoError
     $ Cipher.aeadInit Cipher.AEAD_GCM aesKey
