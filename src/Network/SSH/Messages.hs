@@ -611,7 +611,7 @@ getSshKex  = label "SshKex" $
      sshFirstKexFollows   <- label "sshFirstKexFollows"   getBoolean
 
      -- RESERVED
-     _ <- getWord32be
+     0 <- getWord32be
 
      return SshKex { .. }
 

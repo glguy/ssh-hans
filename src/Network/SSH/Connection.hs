@@ -200,12 +200,14 @@ handleRequest request channelId channel =
 
     SshChannelRequestShell ->
       do (client, state) <- Connection ask
-         liftIO $
-           do _ <- forkIO $
-                      cOpenShell client (fromJust (sshChannelPty channel))
-                        (sshChannelEvents channel)
-                        (channelWrite client state channelId channel)
-              return True
+         case sshChannelPty channel of
+           Nothing -> return False
+           Just (term,winsize,termios) ->
+             do _ <- liftIO $ forkIO $
+                   cOpenShell client term winsize termios
+                     (sshChannelEvents channel)
+                     (channelWrite client state channelId channel)
+                return True
     SshChannelRequestExec _command        -> return False
     SshChannelRequestSubsystem _subsystem -> return False
     SshChannelRequestWindowChange winsize ->
