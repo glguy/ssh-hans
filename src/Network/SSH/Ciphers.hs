@@ -25,7 +25,9 @@ module Network.SSH.Ciphers (
   , cipher_arcfour128
   , cipher_arcfour256
 
-  , chacha20_poly1305
+  , cipher_blowfish_cbc
+
+  , cipher_chacha20_poly1305
   ) where
 
 import qualified Data.ByteString as S
@@ -34,6 +36,7 @@ import qualified Data.ByteString.Lazy as L
 
 import           Crypto.Error
 import           Crypto.Cipher.AES
+import           Crypto.Cipher.Blowfish
 import           Crypto.Cipher.TripleDES
 import qualified Crypto.Cipher.Types as Cipher
 import qualified Crypto.Cipher.ChaCha as C
@@ -110,6 +113,10 @@ cipher_aes192_cbc = mk_cipher_cbc (CipherName "aes192-cbc" :: CipherName AES192)
 -- | AES-256 cipher in cipher-block-chaining mode
 cipher_aes256_cbc :: CipherKeys -> Cipher
 cipher_aes256_cbc = mk_cipher_cbc (CipherName "aes256-cbc" :: CipherName AES256)
+
+-- | Blowfish cipher in cipher-block-chaining mode with 128-bit key
+cipher_blowfish_cbc :: CipherKeys -> Cipher
+cipher_blowfish_cbc = mk_cipher_cbc (CipherName "blowfish-cbc" :: CipherName Blowfish128)
 
 -- | AES-128 cipher in couter-mode
 cipher_aes128_ctr :: CipherKeys -> Cipher
@@ -303,8 +310,8 @@ mk_cipher_gcm (CipherName name) CipherKeys { ckInitialIV = initial_iv, ckEncKey 
 ------------------------------------------------------------------------
 
 -- | Implementation of the cipher-auth mode specified in PROTOCOL.chacha20poly1305
-chacha20_poly1305 :: CipherKeys -> Cipher
-chacha20_poly1305 CipherKeys { ckEncKey = key } = Cipher
+cipher_chacha20_poly1305 :: CipherKeys -> Cipher
+cipher_chacha20_poly1305 CipherKeys { ckEncKey = key } = Cipher
   { cipherName  = "chacha20-poly1305@openssh.com"
   , blockSize   = lenLen -- bytes needed to decrypt length field
   , encrypt     = enc
