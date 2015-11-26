@@ -8,10 +8,19 @@ module Network.SSH.Mac (
   , sign
 
   , mac_none
+  , mac_hmac_md5
+  , mac_hmac_md5_96
+  , mac_hmac_ripemd160
   , mac_hmac_sha1
+  , mac_hmac_sha1_96
   , mac_hmac_sha2_256
   , mac_hmac_sha2_512
+
+  , mac_hmac_md5_etm
+  , mac_hmac_md5_96_etm
+  , mac_hmac_ripemd160_etm
   , mac_hmac_sha1_etm
+  , mac_hmac_sha1_96_etm
   , mac_hmac_sha2_256_etm
   , mac_hmac_sha2_512_etm
   ) where
@@ -66,6 +75,10 @@ mk_mac_hmac h name etm = \keyStream ->
       , mETM        = etm
       }
 
+truncateMac :: Int -> Mac -> Mac
+truncateMac n mac = mac { mFunction = S.take n . mFunction mac }
+
+
 -- | A helper that calls 'HMAC.hmac' using an argument to select the hash
 hmac' ::
   Hash.HashAlgorithm a =>
@@ -75,8 +88,20 @@ hmac' ::
   HMAC.HMAC a
 hmac' _ = HMAC.hmac
 
+mac_hmac_md5 :: L.ByteString -> Mac
+mac_hmac_md5 = mk_mac_hmac Hash.MD5 "hmac-md5" False
+
+mac_hmac_md5_96 :: L.ByteString -> Mac
+mac_hmac_md5_96 = truncateMac 12 . mk_mac_hmac Hash.MD5 "hmac-md5-96" False
+
+mac_hmac_ripemd160 :: L.ByteString -> Mac
+mac_hmac_ripemd160 = mk_mac_hmac Hash.RIPEMD160 "hmac-ripemd160" False
+
 mac_hmac_sha1 :: L.ByteString -> Mac
 mac_hmac_sha1 = mk_mac_hmac Hash.SHA1 "hmac-sha1" False
+
+mac_hmac_sha1_96 :: L.ByteString -> Mac
+mac_hmac_sha1_96 = truncateMac 12 . mk_mac_hmac Hash.SHA1 "hmac-sha1-96" False
 
 mac_hmac_sha2_256 :: L.ByteString -> Mac
 mac_hmac_sha2_256 = mk_mac_hmac Hash.SHA256 "hmac-sha2-256" False
@@ -84,8 +109,22 @@ mac_hmac_sha2_256 = mk_mac_hmac Hash.SHA256 "hmac-sha2-256" False
 mac_hmac_sha2_512 :: L.ByteString -> Mac
 mac_hmac_sha2_512 = mk_mac_hmac Hash.SHA512 "hmac-sha2-512" False
 
+
+
+mac_hmac_md5_etm :: L.ByteString -> Mac
+mac_hmac_md5_etm = mk_mac_hmac Hash.MD5 "hmac-md5-etm@openssh.com" True
+
+mac_hmac_md5_96_etm :: L.ByteString -> Mac
+mac_hmac_md5_96_etm = truncateMac 12 . mk_mac_hmac Hash.MD5 "hmac-md5-96-etm@openssh.com" True
+
+mac_hmac_ripemd160_etm :: L.ByteString -> Mac
+mac_hmac_ripemd160_etm = mk_mac_hmac Hash.RIPEMD160 "hmac-ripemd160-etm@openssh.com" True
+
 mac_hmac_sha1_etm :: L.ByteString -> Mac
 mac_hmac_sha1_etm = mk_mac_hmac Hash.SHA1 "hmac-sha1-etm@openssh.com" True
+
+mac_hmac_sha1_96_etm :: L.ByteString -> Mac
+mac_hmac_sha1_96_etm = truncateMac 12 . mk_mac_hmac Hash.SHA1 "hmac-sha1-96-etm@openssh.com" True
 
 mac_hmac_sha2_256_etm :: L.ByteString -> Mac
 mac_hmac_sha2_256_etm = mk_mac_hmac Hash.SHA256 "hmac-sha2-256-etm@openssh.com" True
