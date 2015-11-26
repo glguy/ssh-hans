@@ -29,19 +29,21 @@ data SessionEvent
   | SessionClose
   | SessionWinsize SshWindowSize
 
-data Client = Client { cGet         :: Int -> IO S.ByteString
-                     , cPut         :: L.ByteString -> IO ()
-                     , cOpenShell   :: (S.ByteString, SshWindowSize, [(TerminalFlag, Word32)]) ->
-                                        Chan SessionEvent ->
-                                        (Maybe S.ByteString -> IO ()) ->
-                                        IO ()
-                     , cClose       :: IO ()
-                     , cAuthHandler :: SshSessionId  ->
-                                       S.ByteString  ->
-                                       SshService    ->
-                                       SshAuthMethod ->
-                                       IO AuthResult
-                     }
+data Client = Client
+  { cGet         :: Int -> IO S.ByteString
+  , cPut         :: L.ByteString -> IO ()
+  , cClose       :: IO ()
+
+  , cOpenShell   :: S.ByteString -> SshWindowSize -> [(TerminalFlag, Word32)] ->
+                    Chan SessionEvent ->
+                    (Maybe S.ByteString -> IO ()) ->
+                    IO ()
+  , cAuthHandler :: SshSessionId  ->
+                    S.ByteString  ->
+                    SshService    ->
+                    SshAuthMethod ->
+                    IO AuthResult
+  }
 
 
 data SshState = SshState
