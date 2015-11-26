@@ -20,6 +20,11 @@ module Network.SSH.Ciphers (
 
   , cipher_aes128_gcm
   , cipher_aes256_gcm
+
+  , cipher_arcfour
+  , cipher_arcfour128
+  , cipher_arcfour256
+
   , chacha20_poly1305
   ) where
 
@@ -32,12 +37,13 @@ import           Crypto.Cipher.AES
 import           Crypto.Cipher.TripleDES
 import qualified Crypto.Cipher.Types as Cipher
 import qualified Crypto.Cipher.ChaCha as C
+import qualified Crypto.Cipher.RC4 as RC4
 import qualified Crypto.MAC.Poly1305 as Poly
 
 import           Control.Applicative
 import           Data.Serialize
 import           Data.Word
-import           Data.ByteArray (constEq, convert)
+import           Data.ByteArray (Bytes, constEq, convert)
 import           Data.Monoid ((<>))
 
 import           Network.SSH.Keys
@@ -74,34 +80,70 @@ cipher_none  =
 
 data CipherName a = CipherName S.ByteString
 
+-- | AES in Galois Counter Mode, 96-bit IV, 128-bit key, 128-bit MAC
+--
+-- RFC 5647: AES Galois Counter Mode for the Secure Shell Transport Layer Protocol
 cipher_aes128_gcm :: CipherKeys -> Cipher
 cipher_aes128_gcm = mk_cipher_gcm (CipherName "aes128-gcm@openssh.com" :: CipherName AES128)
 
+-- | AES in Galois Counter Mode, 96-bit IV, 256-bit key, 128-bit MAC
+--
+-- RFC 5647: AES Galois Counter Mode for the Secure Shell Transport Layer Protocol
 cipher_aes256_gcm :: CipherKeys -> Cipher
 cipher_aes256_gcm = mk_cipher_gcm (CipherName "aes256-gcm@openssh.com" :: CipherName AES256)
 
--- | Weak cipher and also the current implementation is INSANELY slow!
+-- | 3DES (EDE version) in cipher-block-chaining mode. 168-bit key
+--
+-- Weak cipher and also the current implementation is INSANELY slow!
 cipher_3des_cbc :: CipherKeys -> Cipher
 cipher_3des_cbc = mk_cipher_cbc (CipherName "3des-cbc" :: CipherName DES_EDE3)
 {-# WARNING cipher_3des_cbc "3des-cbc is not only weak but it is very slow" #-}
 
+-- | AES-128 cipher in cipher-block-chaining mode
 cipher_aes128_cbc :: CipherKeys -> Cipher
 cipher_aes128_cbc = mk_cipher_cbc (CipherName "aes128-cbc" :: CipherName AES128)
 
+-- | AES-192 cipher in cipher-block-chaining mode
 cipher_aes192_cbc :: CipherKeys -> Cipher
 cipher_aes192_cbc = mk_cipher_cbc (CipherName "aes192-cbc" :: CipherName AES192)
 
+-- | AES-256 cipher in cipher-block-chaining mode
 cipher_aes256_cbc :: CipherKeys -> Cipher
 cipher_aes256_cbc = mk_cipher_cbc (CipherName "aes256-cbc" :: CipherName AES256)
 
+-- | AES-128 cipher in couter-mode
 cipher_aes128_ctr :: CipherKeys -> Cipher
 cipher_aes128_ctr = mk_cipher_ctr (CipherName "aes128-ctr" :: CipherName AES128)
 
+-- | AES-192 cipher in couter-mode
 cipher_aes192_ctr :: CipherKeys -> Cipher
 cipher_aes192_ctr = mk_cipher_ctr (CipherName "aes192-ctr" :: CipherName AES192)
 
+-- | AES-256 cipher in couter-mode
 cipher_aes256_ctr :: CipherKeys -> Cipher
 cipher_aes256_ctr = mk_cipher_ctr (CipherName "aes256-ctr" :: CipherName AES256)
+
+-- | RC4 stream cipher with 128-bit key
+--
+-- This mode does not drop initial bytes from the stream which can compromise
+-- confidentiality over time.
+cipher_arcfour :: CipherKeys -> Cipher
+cipher_arcfour = mk_cipher_rc4 "arcfour" 16 0
+{-# DEPRECATED cipher_arcfour "arcfour128 and arcfour256 mitigate weaknesses in arcfour" #-}
+
+-- | RC4 stream cipher with 128-bit key
+--
+-- RFC 4345: Improved Arcfour Modes for the SSH Transport Layer Protocol
+cipher_arcfour128 :: CipherKeys -> Cipher
+cipher_arcfour128 = mk_cipher_rc4 "arcfour128" 16 1536
+
+-- | RC4 stream cipher with 256-bit key
+--
+-- RFC 4345: Improved Arcfour Modes for the SSH Transport Layer Protocol
+cipher_arcfour256 :: CipherKeys -> Cipher
+cipher_arcfour256 = mk_cipher_rc4 "arcfour256" 32 1536
+
+------------------------------------------------------------------------
 
 mk_cipher_cbc :: forall cipher. Cipher.BlockCipher cipher => CipherName cipher -> CipherKeys -> Cipher
 mk_cipher_cbc (CipherName name) CipherKeys { ckInitialIV = initial_iv, ckEncKey = key } = cipher
@@ -174,6 +216,31 @@ mk_cipher_ctr (CipherName name) CipherKeys { ckInitialIV = initial_iv, ckEncKey 
     cipherText = Cipher.ctrCombine aesKey iv bytes
     iv' = Cipher.ivAdd iv
         $ S.length bytes `quot` ivSize
+
+mk_cipher_rc4 ::
+  S.ByteString {- ^ cipher name -} ->
+  Int {- ^ key size in bytes -} ->
+  Int {- ^ stream discard size in bytes -} ->
+  CipherKeys -> Cipher
+mk_cipher_rc4 name keySize discardSize CipherKeys { ckEncKey = key } = cipher
+  where
+  (st0,_::Bytes) = RC4.generate (RC4.initialize (grab keySize key)) discardSize
+
+  fakeBlockSize = 8
+
+  cipher =
+    Cipher { cipherName  = name
+           , blockSize   = fakeBlockSize
+           , encrypt     = \_ -> RC4.combine
+           , decrypt     = \_ -> RC4.combine
+           , cipherState = st0
+           , paddingSize = roundUp fakeBlockSize
+           , getLength   = \_ st block ->
+                           either undefined fromIntegral
+                         $ runGet getWord32be
+                         $ snd -- ignore new state
+                         $ RC4.combine st block
+           }
 
 mk_cipher_gcm :: forall cipher. Cipher.BlockCipher cipher => CipherName cipher -> CipherKeys -> Cipher
 mk_cipher_gcm (CipherName name) CipherKeys { ckInitialIV = initial_iv, ckEncKey = key } = cipher
