@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Network.SSH.Protocol (
@@ -8,12 +9,12 @@ module Network.SSH.Protocol (
   , getNameList, putNameList
   ) where
 
-import           Data.Bits ( shiftL, shiftR, (.&.), testBit )
+import           Data.Bits ( shiftL, shiftR, testBit )
 import qualified Data.ByteString as S
 import           Data.Char ( ord )
 import           Data.List ( intersperse )
 import           Data.Serialize
-                     ( Putter, Get, isolate, getBytes, putByteString
+                     ( Putter, Get, getBytes, putByteString
                      , getWord8, putWord8, putWord32be, getWord32be )
 import           Data.Word ( Word8, Word32 )
 
@@ -26,41 +27,28 @@ putBoolean False = putWord8 0
 
 putMpInt :: Putter Integer
 putMpInt i =
-  do putWord32be len
+  do let (len,bytes) = unpack i
+     putWord32be len
      mapM_ putWord8 bytes
-  where
-  (len,bytes) = unpack i
 
 unpack :: Integer -> (Word32, [Word8])
-unpack  = go 0 []
+unpack 0 = (0,[])
+unpack n0 = go 0 [] n0
   where
-  go len bytes n
-    | abs n < 0xff = finalize len bytes n
-    | otherwise    = let byte = fromInteger (n .&. 0xff)
-                         n'   = n `shiftR` 8
-                         len' = len + 1
-                      in go len' (byte : bytes) (byte `seq` len' `seq` n')
+  go !len bytes n
+    | -0x80 <= n && n < 0x80 = (len1, n8 : bytes)
+    | otherwise              = go len1 (n8 : bytes) $! shiftR n 8
+    where
+    !n8      = fromInteger n
+    !len1    = len + 1
 
-  finalize len bytes n
-    | n == 0               = (len,                     bytes)
-    | n > 0 && testBit n 7 = (len + 2, 0 : fromInteger n : bytes)
-    | otherwise            = (len + 1,     fromInteger n : bytes)
 
 putUnsigned :: Int -> Putter Integer
-putUnsigned size val =
-  do let (padding,bytes) = go [] val
-     mapM_ putWord8 padding
-     mapM_ putWord8 bytes
+putUnsigned size val = mapM_ putWord8 (go [] size val)
   where
-
-  go acc n
-    | n <= 0xff = let res    = reverse (fromInteger n : acc)
-                      len    = length res
-                      padLen = size - len
-                   in (replicate padLen 0, res)
-
-    | otherwise = let acc' = fromInteger (n .&. 0xff) : acc
-                   in go acc' (acc' `seq` (n `shiftR` 8))
+  go acc 0 _ = acc
+  go acc sz n = go (n8 : acc) (sz-1) $! n`shiftR`8
+     where !n8 = fromInteger n
 
 putNameList :: Putter [S.ByteString]
 putNameList names =
@@ -86,37 +74,25 @@ getBoolean  =
 getMpInt :: Get Integer
 getMpInt  =
   do numBytes <- getWord32be
-
-     if numBytes == 0
-        then return 0
-        else isolate (fromIntegral numBytes) $
-               do w <- getWord8
-                  let msb | w == 0      = 0
-                          | testBit w 7 = toInteger w - 0x100
-                          | otherwise   = toInteger w
-
-                  go msb (numBytes - 1)
-  where
-  go acc 0 =    return acc
-  go acc n = do w <- getWord8
-                let acc' = (acc `shiftL` 8) + fromIntegral w
-                go acc' (acc' `seq` n-1)
+     bytes    <- getBytes (fromIntegral numBytes)
+     return $! case S.uncons bytes of
+                 Nothing -> 0
+                 Just (msb,rest) -> S.foldl' aux msb' rest
+                   where
+                      aux acc b = acc`shiftL`8 + fromIntegral b
+                      msb' | testBit msb 7 = toInteger msb - 0x100
+                           | otherwise     = toInteger msb
 
 getUnsigned :: Int -> Get Integer
-getUnsigned  = go []
+getUnsigned n = S.foldl' aux 0 <$> getBytes n
   where
-  go acc 0 = return $! foldr step 0 acc
-  go acc n = do w <- getWord8
-                let acc' = w : acc
-                go acc' (acc' `seq` n - 1)
-
-  step w acc = acc `shiftL` 8 + toInteger w
+  aux acc n = acc`shiftL`8 + fromIntegral n
 
 getNameList :: Get [S.ByteString]
 getNameList  =
   do len   <- getWord32be
      bytes <- getBytes (fromIntegral len)
-     return (S.splitWith (== comma) bytes)
+     return (S.split comma bytes)
   where
   comma = fromIntegral (ord ',')
 

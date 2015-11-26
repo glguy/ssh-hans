@@ -30,14 +30,22 @@ data SessionEvent
   | SessionWinsize SshWindowSize
 
 data Client = Client
+  -- | Read up to 'n' bytes from network socket
   { cGet         :: Int -> IO S.ByteString
+
+  -- | Put bytes on network socket
   , cPut         :: L.ByteString -> IO ()
+
+  -- | Close network socket
   , cClose       :: IO ()
 
+  -- | TERM, initial window dimensions, termios flags, incoming events, write callback
   , cOpenShell   :: S.ByteString -> SshWindowSize -> [(TerminalFlag, Word32)] ->
                     Chan SessionEvent ->
                     (Maybe S.ByteString -> IO ()) ->
                     IO ()
+
+  -- | ByteString argument is user name
   , cAuthHandler :: SshSessionId  ->
                     S.ByteString  ->
                     SshService    ->
