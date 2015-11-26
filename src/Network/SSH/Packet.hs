@@ -13,10 +13,13 @@ import qualified Data.ByteString as S
 import qualified Data.ByteString.Lazy as L
 import           Data.Char ( chr )
 import           Data.Word
+import           Data.Monoid ((<>))
 import           Data.Serialize
                      ( Get, Put, runGet, runPut, label, isolate, remaining
                      , lookAhead, skip, getBytes, getWord8, putWord8
-                     , putWord32be, Putter, putByteString )
+                     , getWord32be, putWord32be, Putter, putByteString )
+
+import           Crypto.Random
 
 data SshIdent = SshIdent { sshProtoVersion
                          , sshSoftwareVersion
@@ -63,8 +66,31 @@ putSshIdent SshIdent { .. } =
      putByteString "\r\n"
 
 -- | Given a way to render something, turn it into an ssh packet.
-putSshPacket :: Word32 -> Cipher -> Mac -> Put -> (L.ByteString,Cipher)
-putSshPacket seqNum Cipher{..} mac render = (packet,Cipher{cipherState=st',..})
+putSshPacket :: DRG gen => Word32 -> Cipher -> Mac -> gen -> Put -> (L.ByteString,Cipher,gen)
+
+putSshPacket seqNum Cipher{..} mac gen render
+  | mETM mac = (packet,Cipher{cipherState=st',..},gen')
+  where
+  packet = L.fromChunks [ lenBytes, encBody, sig ]
+
+  (st',encBody) = encrypt seqNum cipherState body
+  sig           = sign seqNum mac (lenBytes <> encBody)
+
+  lenBytes = runPut (putWord32be (fromIntegral payloadLen))
+
+  body = runPut $
+    do putWord8 (fromIntegral paddingLen)
+       putByteString bytes
+       putByteString padding
+
+  bytes    = runPut render
+  bytesLen = S.length bytes
+  paddingLen = paddingSize bytesLen
+  payloadLen = 1 + bytesLen + paddingLen
+  (padding, gen') = randomBytesGenerate paddingLen gen
+
+-- Original packet format (without ETM)
+putSshPacket seqNum Cipher{..} mac gen render = (packet,Cipher{cipherState=st',..},gen')
   where
   packet = L.fromChunks [ encBody, sig ]
 
@@ -79,12 +105,9 @@ putSshPacket seqNum Cipher{..} mac render = (packet,Cipher{cipherState=st',..})
 
   bytes    = runPut render
   bytesLen = S.length bytes
-  paddingLen = paddingSize bytesLen
+  paddingLen = paddingSize (4+bytesLen)
   packetLen = 1 + bytesLen + paddingLen
-
-  -- XXX the padding SHOULD be random bytes, so this should probably change
-  padding = S.replicate paddingLen 0x0
-
+  (padding, gen') = randomBytesGenerate paddingLen gen
 
 -- Parsing ---------------------------------------------------------------------
 
@@ -137,6 +160,28 @@ getSshIdent  = label "SshIdent" $
 -- | Given a way to parse the payload of an ssh packet, do the required
 -- book-keeping surrounding the data.
 getSshPacket :: Show a => Word32 -> Cipher -> Mac -> Get a -> Get (a,Cipher)
+getSshPacket seqNum Cipher{..} mac getPayload
+  | mETM mac = label "SshPacket" $
+  do packetLen <- getWord32be
+     payload   <- getBytes (fromIntegral packetLen)
+     let computedSig = sign seqNum mac (runPut (putWord32be packetLen >> putByteString payload))
+     sig <- getBytes (S.length computedSig)
+     unless (sig == computedSig) (fail "signature validation failed")
+
+     let (st', bytes) = decrypt seqNum cipherState payload
+     case runGet (finish (fromIntegral packetLen)) bytes of
+       Left e -> fail e
+       Right x -> return (x,Cipher{cipherState=st',..})
+
+  where
+  finish n =
+    do padLen <- fmap fromIntegral getWord8
+       unless (4 <= padLen && padLen < n) (fail "bad padding length")
+       result <- isolate (n-padLen-1) getPayload
+       skip padLen
+       return result
+
+-- Original packet format without ETM
 getSshPacket seqNum Cipher{..} mac getPayload = label "SshPacket" $
   do let blockLen = max blockSize 8
      firstBlock <- lookAhead (getBytes blockLen)

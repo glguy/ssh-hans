@@ -25,7 +25,7 @@ import qualified Crypto.MAC.Poly1305 as Poly
 import           Control.Applicative
 import           Data.Serialize
 import           Data.Word
-import           Data.ByteArray (convert)
+import           Data.ByteArray (constEq, convert)
 import           Data.Monoid ((<>))
 
 import           Network.SSH.Keys
@@ -226,8 +226,8 @@ chacha20_poly1305 CipherKeys { ckEncKey = key } = Cipher
     S.ByteString       {- ^ len_ct || body_ct || mac -} ->
     ((), S.ByteString) {- ^ dummy  || body_pt        -}
   dec seqNr _ input_text
-    | computed_mac == expected_mac = ((), dummy_body_pt)
-    | otherwise                    = error "bad poly1305 tag"
+    | constEq computed_mac expected_mac = ((), dummy_body_pt)
+    | otherwise                         = error "bad poly1305 tag"
     where
     nonce               = mkNonce seqNr
 
@@ -236,7 +236,7 @@ chacha20_poly1305 CipherKeys { ckEncKey = key } = Cipher
 
     len_body_len        = S.length input_text - macLen
     (len_body_ct, expected_mac) = S.splitAt len_body_len input_text
-    computed_mac        = convert (Poly.auth polyKey len_body_ct)
+    computed_mac        = Poly.auth polyKey len_body_ct
 
     body_ct             = S.drop lenLen len_body_ct
     st0                 = C.initialize rounds payloadKey nonce
@@ -256,7 +256,7 @@ chacha20_poly1305 CipherKeys { ckEncKey = key } = Cipher
     ()                 {- ^ cipher state             -} ->
     S.ByteString       {- ^ len_pt || body_pt        -} ->
     ((), S.ByteString) {- ^ len_ct || body_ct || mac -}
-  enc seqNr _ input_pt = ((), len_body_ct <> mac)
+  enc seqNr _ input_pt = ((), len_body_ct <> convert mac)
     where
     nonce               = mkNonce seqNr
 
@@ -264,7 +264,7 @@ chacha20_poly1305 CipherKeys { ckEncKey = key } = Cipher
     (len_ct, _      )   = C.combine (C.initialize rounds lenKey nonce) len_pt
 
     len_body_ct         = len_ct <> body_ct
-    mac                 = convert (Poly.auth polyKey len_body_ct)
+    mac                 = Poly.auth polyKey len_body_ct
 
     st0                 = C.initialize rounds payloadKey nonce
     (polyKey,  st1)     = C.generate st0 polyKeySize :: (S.ByteString, C.State)
@@ -279,7 +279,7 @@ roundUp ::
   Int {- ^ padding length  -}
 roundUp align bytesLen = paddingLen
   where
-  bytesRem   = (4 + 1 + bytesLen) `mod` align
+  bytesRem   = (1 + bytesLen) `mod` align
 
   -- number of bytes needed to align on block size
   alignBytes | bytesRem == 0 = 0

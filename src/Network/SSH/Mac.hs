@@ -4,12 +4,16 @@
 module Network.SSH.Mac (
     Mac()
   , mName
+  , mETM
   , sign
 
   , mac_none
   , mac_hmac_sha1
   , mac_hmac_sha2_256
   , mac_hmac_sha2_512
+  , mac_hmac_sha1_etm
+  , mac_hmac_sha2_256_etm
+  , mac_hmac_sha2_512_etm
   ) where
 
 import qualified Data.ByteString.Char8 as S
@@ -22,9 +26,11 @@ import qualified Crypto.Hash as Hash
 import           Data.ByteArray (convert)
 
 
-data Mac = Mac { mName       :: !S.ByteString
-               , mFunction   :: S.ByteString -> S.ByteString
-               }
+data Mac = Mac
+  { mName       :: !S.ByteString
+  , mFunction   :: S.ByteString -> S.ByteString
+  , mETM        :: Bool
+  }
 
 instance Show Mac where
   show Mac { .. } = S.unpack mName
@@ -42,19 +48,22 @@ mac_none :: Mac
 mac_none  =
   Mac { mName       = "none"
       , mFunction   = const S.empty
+      , mETM        = False
       }
 
 mk_mac_hmac ::
   Hash.HashAlgorithm a =>
   a ->
   S.ByteString {- ^ name -} ->
+  Bool {- ^ encrypt then modify -} ->
   L.ByteString {- ^ key stream -} ->
   Mac
-mk_mac_hmac h name = \keyStream ->
+mk_mac_hmac h name etm = \keyStream ->
   let keySize = fromIntegral (Hash.hashDigestSize h)
       key = L.toStrict (L.take keySize keyStream) in
   Mac { mName       = name
       , mFunction   = convert . hmac' h key
+      , mETM        = etm
       }
 
 -- | A helper that calls 'HMAC.hmac' using an argument to select the hash
@@ -67,10 +76,19 @@ hmac' ::
 hmac' _ = HMAC.hmac
 
 mac_hmac_sha1 :: L.ByteString -> Mac
-mac_hmac_sha1 = mk_mac_hmac Hash.SHA1 "hmac-sha1"
+mac_hmac_sha1 = mk_mac_hmac Hash.SHA1 "hmac-sha1" False
 
 mac_hmac_sha2_256 :: L.ByteString -> Mac
-mac_hmac_sha2_256 = mk_mac_hmac Hash.SHA256 "hmac-sha2-256"
+mac_hmac_sha2_256 = mk_mac_hmac Hash.SHA256 "hmac-sha2-256" False
 
 mac_hmac_sha2_512 :: L.ByteString -> Mac
-mac_hmac_sha2_512 = mk_mac_hmac Hash.SHA512 "hmac-sha2-512"
+mac_hmac_sha2_512 = mk_mac_hmac Hash.SHA512 "hmac-sha2-512" False
+
+mac_hmac_sha1_etm :: L.ByteString -> Mac
+mac_hmac_sha1_etm = mk_mac_hmac Hash.SHA1 "hmac-sha1-etm@openssh.com" True
+
+mac_hmac_sha2_256_etm :: L.ByteString -> Mac
+mac_hmac_sha2_256_etm = mk_mac_hmac Hash.SHA256 "hmac-sha2-256-etm@openssh.com" True
+
+mac_hmac_sha2_512_etm :: L.ByteString -> Mac
+mac_hmac_sha2_512_etm = mk_mac_hmac Hash.SHA512 "hmac-sha2-512-etm@openssh.com" True

@@ -8,13 +8,14 @@ import Network.SSH.Packet
 import Network.SSH.TerminalModes
 import Network.SSH.Mac
 
-import Data.IORef
-import Data.Word
-import Data.Serialize.Get
-import Control.Concurrent
+import           Data.IORef
+import           Data.Word
+import           Data.Serialize.Get
+import           Control.Concurrent
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Char8 as S8
 import qualified Data.ByteString.Lazy as L
+import           Crypto.Random
 
 
 -- Server Internals ------------------------------------------------------------
@@ -57,22 +58,23 @@ data Client = Client
 data SshState = SshState
   { sshRecvState :: !(IORef (Word32, Cipher,Mac)) -- ^ Client context
   , sshBuf       :: !(IORef S.ByteString)
-  , sshSendState :: !(MVar (Word32, Cipher, Mac)) -- ^ Server encryption context
+  , sshSendState :: !(MVar (Word32, Cipher, Mac, ChaChaDRG)) -- ^ Server encryption context
   }
 
 initialState :: IO SshState
 initialState  =
-  do sshRecvState <- newIORef (0,cipher_none,mac_none)
-     sshSendState <- newMVar (0,cipher_none, mac_none)
+  do drg          <- drgNew
+     sshRecvState <- newIORef (0,cipher_none,mac_none)
+     sshSendState <- newMVar (0,cipher_none, mac_none,drg)
      sshBuf       <- newIORef S.empty
      return SshState { .. }
 
 send :: Client -> SshState -> SshMsg -> IO ()
 send client SshState { .. } msg =
-  modifyMVar_ sshSendState $ \(seqNum, cipher, mac) ->
-    do let (pkt,cipher') = putSshPacket seqNum cipher mac (putSshMsg msg)
+  modifyMVar_ sshSendState $ \(seqNum, cipher, mac, gen) ->
+    do let (pkt,cipher',gen') = putSshPacket seqNum cipher mac gen (putSshMsg msg)
        cPut client pkt
-       return (seqNum+1, cipher',mac)
+       return (seqNum+1, cipher',mac, gen')
 
 
 receive :: Client -> SshState -> IO SshMsg
