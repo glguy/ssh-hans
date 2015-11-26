@@ -8,6 +8,8 @@ module Network.SSH.Ciphers (
 
   , cipher_none
 
+  , cipher_3des_cbc
+
   , cipher_aes128_cbc
   , cipher_aes192_cbc
   , cipher_aes256_cbc
@@ -27,6 +29,7 @@ import qualified Data.ByteString.Lazy as L
 
 import           Crypto.Error
 import           Crypto.Cipher.AES
+import           Crypto.Cipher.TripleDES
 import qualified Crypto.Cipher.Types as Cipher
 import qualified Crypto.Cipher.ChaCha as C
 import qualified Crypto.MAC.Poly1305 as Poly
@@ -76,6 +79,11 @@ cipher_aes128_gcm = mk_cipher_gcm (CipherName "aes128-gcm@openssh.com" :: Cipher
 
 cipher_aes256_gcm :: CipherKeys -> Cipher
 cipher_aes256_gcm = mk_cipher_gcm (CipherName "aes256-gcm@openssh.com" :: CipherName AES256)
+
+-- | Weak cipher and also the current implementation is INSANELY slow!
+cipher_3des_cbc :: CipherKeys -> Cipher
+cipher_3des_cbc = mk_cipher_cbc (CipherName "3des-cbc" :: CipherName DES_EDE3)
+{-# WARNING cipher_3des_cbc "3des-cbc is not only weak but it is very slow" #-}
 
 cipher_aes128_cbc :: CipherKeys -> Cipher
 cipher_aes128_cbc = mk_cipher_cbc (CipherName "aes128-cbc" :: CipherName AES128)
