@@ -25,10 +25,10 @@ import           Crypto.Random
 
 -- Server Internals ------------------------------------------------------------
 
-data AuthResult = AuthFailed [ShortByteString]
-                | AuthAccepted
-                | AuthPkOk S.ByteString SshPubCert
-
+data AuthResult
+  = AuthFailed [ShortByteString]
+  | AuthAccepted
+  | AuthPkOk S.ByteString SshPubCert
 
 data SessionEvent
   = SessionData S.ByteString

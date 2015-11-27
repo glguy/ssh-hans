@@ -52,7 +52,7 @@ data SshMsg = SshMsgDisconnect SshDiscReason !S.ByteString !S.ByteString
             | SshMsgDebug Bool !S.ByteString !S.ByteString
             | SshMsgServiceRequest SshService
             | SshMsgServiceAccept SshService
-            | SshMsgKexInit SshKex
+            | SshMsgKexInit SshProposal
             | SshMsgNewKeys
             | SshMsgKexDhInit !S.ByteString
             | SshMsgKexDhReply SshPubCert !S.ByteString SshSig
@@ -190,30 +190,35 @@ data SshDiscReason = SshDiscNoReason
 
 -- | Always 16 bytes of random data.
 newtype SshCookie = SshCookie S.ByteString
-                    deriving (Show,Eq)
+  deriving (Eq,Show,Read)
 
-data SshAlgs = SshAlgs { sshClientToServer :: [ShortByteString]
-                       , sshServerToClient :: [ShortByteString]
-                       } deriving (Show,Eq)
+type NameList = [ShortByteString]
 
-data SshKex = SshKex { sshCookie            :: !SshCookie
-                     , sshKexAlgs           :: [ShortByteString]
-                     , sshServerHostKeyAlgs :: [ShortByteString]
-                     , sshEncAlgs           :: !SshAlgs
-                     , sshMacAlgs           :: !SshAlgs
-                     , sshCompAlgs          :: !SshAlgs
-                     , sshLanguages         :: !SshAlgs
-                     , sshFirstKexFollows   :: Bool
-                     } deriving (Show,Eq)
+data SshAlgs = SshAlgs
+  { sshClientToServer :: NameList
+  , sshServerToClient :: NameList
+  } deriving (Eq,Show,Read)
 
-data SshPubCert = SshPubDss !Integer !Integer !Integer !Integer -- ^ p q g y
-                | SshPubRsa !Integer !Integer -- ^ e n
-                | SshPubEcDsaP256 !S.ByteString
-                | SshPubEcDsaP384 !S.ByteString
-                | SshPubEcDsaP521 !S.ByteString
-                | SshPubEd25519 !S.ByteString
-                | SshPubOther !S.ByteString !S.ByteString
-                  deriving (Show,Eq)
+data SshProposal = SshProposal
+  { sshCookie            :: !SshCookie
+  , sshKexAlgs           :: NameList
+  , sshServerHostKeyAlgs :: NameList
+  , sshEncAlgs           :: !SshAlgs
+  , sshMacAlgs           :: !SshAlgs
+  , sshCompAlgs          :: !SshAlgs
+  , sshLanguages         :: !SshAlgs
+  , sshFirstKexFollows   :: Bool
+  } deriving (Eq,Show,Read)
+
+data SshPubCert
+  = SshPubDss !Integer !Integer !Integer !Integer -- ^ p q g y
+  | SshPubRsa !Integer !Integer -- ^ e n
+  | SshPubEcDsaP256 !S.ByteString
+  | SshPubEcDsaP384 !S.ByteString
+  | SshPubEcDsaP521 !S.ByteString
+  | SshPubEd25519 !S.ByteString
+  | SshPubOther !S.ByteString !S.ByteString
+  deriving (Eq,Show,Read)
 
 sshPubCertName :: SshPubCert -> S.ByteString
 sshPubCertName SshPubDss       {} = "ssh-dss"
@@ -224,14 +229,15 @@ sshPubCertName SshPubEcDsaP521 {} = "ecdsa-sha2-nistp521"
 sshPubCertName SshPubEd25519   {} = "ssh-ed25519"
 sshPubCertName (SshPubOther n _) = n
 
-data SshSig = SshSigDss !Integer !Integer -- ^ r s
-            | SshSigRsa !S.ByteString
-            | SshSigEcDsaP256 !S.ByteString
-            | SshSigEcDsaP384 !S.ByteString
-            | SshSigEcDsaP521 !S.ByteString
-            | SshSigEd25519 !S.ByteString
-            | SshSigOther S.ByteString S.ByteString
-              deriving (Show,Eq)
+data SshSig
+  = SshSigDss !Integer !Integer -- ^ r s
+  | SshSigRsa !S.ByteString
+  | SshSigEcDsaP256 !S.ByteString
+  | SshSigEcDsaP384 !S.ByteString
+  | SshSigEcDsaP521 !S.ByteString
+  | SshSigEd25519 !S.ByteString
+  | SshSigOther S.ByteString S.ByteString
+  deriving (Eq,Show,Read)
 
 newtype SshSessionId = SshSessionId S.ByteString
 
@@ -301,8 +307,8 @@ putSshMsg msg =
        SshMsgDebug d m l                -> putDebug d m l
        SshMsgServiceRequest svc         -> putSshService svc
        SshMsgServiceAccept svc          -> putSshService svc
-       SshMsgKexInit kex                -> putSshKex kex
 
+       SshMsgKexInit proposal           -> putSshProposal proposal
        SshMsgNewKeys                    -> return ()
        SshMsgKexDhInit n                -> putByteString n -- encoding varies
        SshMsgKexDhReply c f s           -> putDhReply c f s
@@ -346,8 +352,8 @@ putSshAlgs SshAlgs { .. } =
   do putNameList sshClientToServer
      putNameList sshServerToClient
 
-putSshKex :: Putter SshKex
-putSshKex SshKex { .. } =
+putSshProposal :: Putter SshProposal
+putSshProposal SshProposal{ .. } =
   do putSshCookie sshCookie
      putNameList sshKexAlgs
      putNameList sshServerHostKeyAlgs
@@ -526,7 +532,7 @@ getSshMsg  =
        SshMsgTagDebug                   -> getDebug
        SshMsgTagServiceRequest          -> SshMsgServiceRequest <$> getSshService
        SshMsgTagServiceAccept           -> SshMsgServiceAccept  <$> getSshService
-       SshMsgTagKexInit                 -> SshMsgKexInit    <$> getSshKex
+       SshMsgTagKexInit                 -> SshMsgKexInit <$> getSshProposal
        SshMsgTagNewKeys                 -> return SshMsgNewKeys
        SshMsgTagKexDhInit               -> SshMsgKexDhInit  <$> getRemaining
        SshMsgTagKexDhReply              -> fail "unimplemented"
@@ -600,8 +606,8 @@ getSshAlgs  =
      sshServerToClient <- getNameList
      return SshAlgs { .. }
 
-getSshKex :: Get SshKex
-getSshKex  = label "SshKex" $
+getSshProposal :: Get SshProposal
+getSshProposal  = label "SshProposal" $
   do sshCookie            <- label "sshCookie"            getSshCookie
      sshKexAlgs           <- label "sshKexAlgs"           getNameList
      sshServerHostKeyAlgs <- label "sshServerHostKeyAlgs" getNameList
@@ -614,7 +620,7 @@ getSshKex  = label "SshKex" $
      -- RESERVED
      0 <- getWord32be
 
-     return SshKex { .. }
+     return SshProposal{ .. }
 
 getSshPubCert :: Get SshPubCert
 getSshPubCert  = label "SshPubCert" $

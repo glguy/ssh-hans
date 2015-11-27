@@ -91,7 +91,7 @@ data CipherSuite = CipherSuite
   , suite_c2s_mac   , suite_s2c_mac    :: L.ByteString -> Mac
   }
 
-computeSuite :: SshKex -> SshKex -> Maybe CipherSuite
+computeSuite :: SshProposal -> SshProposal -> Maybe CipherSuite
 computeSuite server client =
   do suite_kex        <- lookupNamed allKex
                      =<< determineAlg sshKexAlgs server client
@@ -119,9 +119,9 @@ computeSuite server client =
 
 -- | Select first client choice acceptable to the server
 determineAlg ::
-  (SshKex -> [ShortByteString]) {- ^ selector -} ->
-  SshKex {- ^ server -} ->
-  SshKex {- ^ client -} ->
+  (SshProposal -> [ShortByteString]) {- ^ selector -} ->
+  SshProposal {- ^ server -} ->
+  SshProposal {- ^ client -} ->
   Maybe ShortByteString
 determineAlg f server client = find (`elem` f server) (f client)
 
@@ -157,9 +157,9 @@ sayHello state client v_s =
        Right v_c -> return v_c
        Left err  -> fail err
 
-supportedKex :: [ShortByteString] -> SshCookie -> SshKex
+supportedKex :: [ShortByteString] -> SshCookie -> SshProposal
 supportedKex hostKeyAlgs cookie =
-  SshKex
+  SshProposal
     { sshKexAlgs           = (map nameOf allKex)
     , sshServerHostKeyAlgs = hostKeyAlgs
     , sshEncAlgs           = SshAlgs (map nameOf allCipher) (map nameOf allCipher)
@@ -173,7 +173,7 @@ supportedKex hostKeyAlgs cookie =
 newCookie :: IO SshCookie
 newCookie = fmap SshCookie (getRandomBytes 16)
 
-startKex :: SshState -> Client -> [ShortByteString] -> IO (SshKex, SshKex)
+startKex :: SshState -> Client -> [ShortByteString] -> IO (SshProposal, SshProposal)
 startKex state client hostKeyAlgs =
   do cookie <- newCookie
      let i_s = supportedKex hostKeyAlgs cookie

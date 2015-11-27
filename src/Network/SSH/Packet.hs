@@ -30,16 +30,16 @@ data SshIdent = SshIdent { sshProtoVersion
 
 sshDhHash :: SshIdent       -- ^ V_C
           -> SshIdent       -- ^ V_S
-          -> SshKex         -- ^ I_C
-          -> SshKex         -- ^ I_S
+          -> SshProposal    -- ^ I_C
+          -> SshProposal    -- ^ I_S
           -> SshPubCert     -- ^ K_S
           -> S.ByteString   -- ^ e
           -> S.ByteString   -- ^ f
           -> S.ByteString   -- ^ K
           -> S.ByteString
 sshDhHash v_c v_s i_c i_s k_s e f k = runPut $
-  do putString (putIdent v_c)
-     putString (putIdent v_s)
+  do putString (renderIdent v_c)
+     putString (renderIdent v_s)
      putString (runPut (putSshMsg (SshMsgKexInit i_c)))
      putString (runPut (putSshMsg (SshMsgKexInit i_s)))
      putString (runPut (putSshPubCert k_s))
@@ -48,8 +48,8 @@ sshDhHash v_c v_s i_c i_s k_s e f k = runPut $
      putByteString k -- encoding varies
   where
   -- special version of putSshIdent that drops the CR-LF at the end
-  putIdent v = let bytes = runPut (putSshIdent v)
-                in S.take (S.length bytes - 2) bytes
+  renderIdent v = let bytes = runPut (putSshIdent v)
+                  in S.take (S.length bytes - 2) bytes
 
 
 -- Rendering -------------------------------------------------------------------
