@@ -1,17 +1,22 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
+
 module Network.SSH.State where
 
 
-import Network.SSH.Ciphers
-import Network.SSH.Messages
-import Network.SSH.Packet
-import Network.SSH.TerminalModes
-import Network.SSH.Mac
+import           Network.SSH.Ciphers
+import           Network.SSH.Keys
+import           Network.SSH.Mac
+import           Network.SSH.Messages
+import           Network.SSH.Named
+import           Network.SSH.Packet
+import           Network.SSH.TerminalModes
 
 import           Data.IORef
 import           Data.Word
 import           Data.Serialize.Get
 import           Control.Concurrent
+import           Data.ByteString.Short (ShortByteString)
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Char8 as S8
 import qualified Data.ByteString.Lazy as L
@@ -20,7 +25,7 @@ import           Crypto.Random
 
 -- Server Internals ------------------------------------------------------------
 
-data AuthResult = AuthFailed [S.ByteString]
+data AuthResult = AuthFailed [ShortByteString]
                 | AuthAccepted
                 | AuthPkOk S.ByteString SshPubCert
 
@@ -64,8 +69,8 @@ data SshState = SshState
 initialState :: IO SshState
 initialState  =
   do drg          <- drgNew
-     sshRecvState <- newIORef (0,cipher_none,mac_none)
-     sshSendState <- newMVar (0,cipher_none, mac_none,drg)
+     sshRecvState <- newIORef (0,namedThing cipher_none nullKeys, namedThing mac_none ""    )
+     sshSendState <- newMVar  (0,namedThing cipher_none nullKeys, namedThing mac_none "",drg)
      sshBuf       <- newIORef S.empty
      return SshState { .. }
 

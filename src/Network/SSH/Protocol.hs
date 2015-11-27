@@ -10,6 +10,8 @@ module Network.SSH.Protocol (
   ) where
 
 import           Data.Bits ( shiftL, shiftR, testBit )
+import           Data.ByteString.Short (ShortByteString, fromShort, toShort)
+import qualified Data.ByteString.Short as Short
 import qualified Data.ByteString as S
 import           Data.Char ( ord )
 import           Data.List ( intersperse )
@@ -50,13 +52,13 @@ putUnsigned size val = mapM_ putWord8 (go [] size val)
   go acc sz n = go (n8 : acc) (sz-1) $! n`shiftR`8
      where !n8 = fromInteger n
 
-putNameList :: Putter [S.ByteString]
+putNameList :: Putter [ShortByteString]
 putNameList names =
   do let len | null names = 0
-             | otherwise  = sum (map S.length names)
+             | otherwise  = sum (map Short.length names)
                           + length names - 1 -- commas
      putWord32be (fromIntegral len)
-     mapM_ putByteString (intersperse "," names)
+     mapM_ putByteString (intersperse "," (map fromShort names))
 
 putString :: Putter S.ByteString
 putString bytes =
@@ -88,11 +90,11 @@ getUnsigned n = S.foldl' aux 0 <$> getBytes n
   where
   aux acc n = acc`shiftL`8 + fromIntegral n
 
-getNameList :: Get [S.ByteString]
+getNameList :: Get [ShortByteString]
 getNameList  =
   do len   <- getWord32be
      bytes <- getBytes (fromIntegral len)
-     return (S.split comma bytes)
+     return (map toShort (S.split comma bytes))
   where
   comma = fromIntegral (ord ',')
 

@@ -6,6 +6,7 @@ module Network.SSH.Messages where
 import           Network.SSH.Protocol
 
 import           Control.Applicative ( (<$>), (<*>) )
+import           Data.ByteString.Short (ShortByteString)
 import qualified Data.ByteString.Char8 as S
 import           Data.Serialize
                      ( Get, Putter, Put, label, isolate, getBytes, putByteString
@@ -57,7 +58,7 @@ data SshMsg = SshMsgDisconnect SshDiscReason !S.ByteString !S.ByteString
             | SshMsgKexDhReply SshPubCert !S.ByteString SshSig
             | SshMsgUserAuthRequest !S.ByteString SshService SshAuthMethod
             | SshMsgUserAuthFailure
-                 [S.ByteString] -- Supported methods
+                 [ShortByteString] -- Supported methods
                  Bool           -- Partial success
             | SshMsgUserAuthPkOk
                  !S.ByteString -- key algorithm
@@ -191,13 +192,13 @@ data SshDiscReason = SshDiscNoReason
 newtype SshCookie = SshCookie S.ByteString
                     deriving (Show,Eq)
 
-data SshAlgs = SshAlgs { sshClientToServer :: [S.ByteString]
-                       , sshServerToClient :: [S.ByteString]
+data SshAlgs = SshAlgs { sshClientToServer :: [ShortByteString]
+                       , sshServerToClient :: [ShortByteString]
                        } deriving (Show,Eq)
 
 data SshKex = SshKex { sshCookie            :: !SshCookie
-                     , sshKexAlgs           :: [S.ByteString]
-                     , sshServerHostKeyAlgs :: [S.ByteString]
+                     , sshKexAlgs           :: [ShortByteString]
+                     , sshServerHostKeyAlgs :: [ShortByteString]
                      , sshEncAlgs           :: !SshAlgs
                      , sshMacAlgs           :: !SshAlgs
                      , sshCompAlgs          :: !SshAlgs
@@ -465,7 +466,7 @@ putSshService SshUserAuth            = putString "ssh-userauth"
 putSshService SshConnection          = putString "ssh-connection"
 putSshService (SshServiceOther name) = putString name
 
-putUserAuthFailure :: [S.ByteString] -> Bool -> Put
+putUserAuthFailure :: [ShortByteString] -> Bool -> Put
 putUserAuthFailure methods partialSuccess =
   do putNameList methods
      putBoolean partialSuccess

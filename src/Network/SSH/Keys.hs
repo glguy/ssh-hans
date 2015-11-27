@@ -3,6 +3,7 @@
 module Network.SSH.Keys where
 
 import           Network.SSH.Protocol ( getString, getMpInt, putMpInt, putString )
+import           Network.SSH.Named
 
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Lazy as L
@@ -24,6 +25,9 @@ data CipherKeys = CipherKeys
   { ckInitialIV :: L.ByteString
   , ckEncKey    :: L.ByteString
   }
+
+nullKeys :: CipherKeys
+nullKeys = CipherKeys "" ""
 
 data Keys = Keys
   { k_c2s_cipherKeys :: CipherKeys
@@ -69,43 +73,52 @@ genKey hash k h = \ x ->
     k_n = chunk k_prev
 
 data Kex = Kex
-  { kexName :: S.ByteString
-  , kexRun :: S.ByteString -> IO (S.ByteString, S.ByteString)
+  { kexRun :: S.ByteString -> IO (S.ByteString, S.ByteString)
   , kexHash :: S.ByteString -> S.ByteString
   }
 
-diffieHellmanGroup1Sha1 :: Kex
-diffieHellmanGroup1Sha1 = Kex
-  { kexName = "diffie-hellman-group1-sha1"
-  , kexRun  = runDh group1
+allKex :: [ Named Kex ]
+allKex =
+  [ diffieHellmanGroup1Sha1
+  , diffieHellmanGroup14Sha1
+  , ecdhSha2Nistp256
+  , ecdhSha2Nistp384
+  , ecdhSha2Nistp521
+  , curve25519sha256
+  ]
+
+diffieHellmanGroup1Sha1 :: Named Kex
+diffieHellmanGroup1Sha1
+  = Named "diffie-hellman-group1-sha1" Kex
+  { kexRun  = runDh group1
   , kexHash = convert . Hash.hashWith Hash.SHA1
   }
 
-diffieHellmanGroup14Sha1 :: Kex
-diffieHellmanGroup14Sha1 = Kex
-  { kexName = "diffie-hellman-group14-sha1"
-  , kexRun  = runDh group14
+diffieHellmanGroup14Sha1 :: Named Kex
+diffieHellmanGroup14Sha1
+  = Named "diffie-hellman-group14-sha1" Kex
+  { kexRun  = runDh group14
   , kexHash = convert . Hash.hashWith Hash.SHA1
   }
 
-ecdhSha2Nistp256 :: Kex
-ecdhSha2Nistp256 = Kex
-  { kexName = "ecdh-sha2-nistp256"
-  , kexRun  = runEcdh (ECC.getCurveByName ECC.SEC_p256r1)
+ecdhSha2Nistp256 :: Named Kex
+ecdhSha2Nistp256
+  = Named "ecdh-sha2-nistp256" Kex
+  { kexRun  = runEcdh (ECC.getCurveByName ECC.SEC_p256r1)
   , kexHash = convert . Hash.hashWith Hash.SHA256
   }
 
-ecdhSha2Nistp384 :: Kex
-ecdhSha2Nistp384 = Kex
-  { kexName = "ecdh-sha2-nistp384"
-  , kexRun  = runEcdh (ECC.getCurveByName ECC.SEC_p384r1)
+ecdhSha2Nistp384 :: Named Kex
+ecdhSha2Nistp384
+  = Named "ecdh-sha2-nistp384" Kex
+  { kexRun  = runEcdh (ECC.getCurveByName ECC.SEC_p384r1)
   , kexHash = convert . Hash.hashWith Hash.SHA384
   }
 
-ecdhSha2Nistp521 :: Kex
-ecdhSha2Nistp521 = Kex
-  { kexName = "ecdh-sha2-nistp521"
-  , kexRun  = runEcdh (ECC.getCurveByName ECC.SEC_p521r1)
+ecdhSha2Nistp521 :: Named Kex
+ecdhSha2Nistp521
+  = Named "ecdh-sha2-nistp521" Kex
+  { kexRun  = runEcdh (ECC.getCurveByName ECC.SEC_p521r1)
   , kexHash = convert . Hash.hashWith Hash.SHA512
   }
 
@@ -206,10 +219,10 @@ curveSizeBytes curve = (ECC.curveSizeBits curve + 7) `div` 8
 
 ------------------------------------------------------------------------
 
-curve25519sha256 :: Kex
-curve25519sha256 = Kex
-  { kexName = "curve25519-sha256@libssh.org"
-  , kexRun  = runCurve25519dh
+curve25519sha256 :: Named Kex
+curve25519sha256
+  = Named "curve25519-sha256@libssh.org" Kex
+  { kexRun  = runCurve25519dh
   , kexHash = convert . Hash.hashWith Hash.SHA256
   }
 
