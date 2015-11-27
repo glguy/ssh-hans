@@ -58,16 +58,15 @@ sshServer sock = forever $
                      Nothing -> fail "negotiation failed"
                      Just suite -> return suite
 
-          hostKeyAlg <- case determineAlg sshServerHostKeyAlgs i_s i_c of
+          hostKeyAlg <- case (`lookup` sAuthenticationAlgs sock) =<<
+                             determineAlg sshServerHostKeyAlgs i_s i_c of
                           Just alg -> return alg
                           Nothing  -> fail "No host key algorithm selected"
 
           (pub_c, pub_s, k) <- startDh client state (suite_kex suite)
-          (sig, cert, token) <-
-            case lookup hostKeyAlg (sAuthenticationAlgs sock) of
-              Nothing -> fail "Bad host key algorithm selected"
-              Just f -> f $ \ cert -> kexHash (suite_kex suite)
-                                    $ sshDhHash v_c v_s i_c i_s cert pub_c pub_s k
+          (sig, cert, token) <- hostKeyAlg
+                              $ \ cert -> kexHash (suite_kex suite)
+                              $ sshDhHash v_c v_s i_c i_s cert pub_c pub_s k
 
           finishDh client state sig cert pub_s
           installSecurity client state suite token k

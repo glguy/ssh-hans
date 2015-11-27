@@ -296,7 +296,7 @@ putSshMsg msg =
   do putSshMsgTag (sshMsgTag msg)
      case msg of
        SshMsgDisconnect r d l           -> putDisconnect r d l
-       SshMsgIgnore bytes               -> putByteString bytes
+       SshMsgIgnore bytes               -> putString bytes
        SshMsgUnimplemented sn           -> putWord32be sn
        SshMsgDebug d m l                -> putDebug d m l
        SshMsgServiceRequest svc         -> putSshService svc
@@ -521,7 +521,7 @@ getSshMsg  =
   do tag <- getSshMsgTag
      case tag of
        SshMsgTagDisconnect              -> getSshDisconnect
-       SshMsgTagIgnore                  -> SshMsgIgnore <$> (getBytes =<< remaining)
+       SshMsgTagIgnore                  -> SshMsgIgnore <$> getString
        SshMsgTagUnimplemented           -> SshMsgUnimplemented <$> getWord32be
        SshMsgTagDebug                   -> getDebug
        SshMsgTagServiceRequest          -> SshMsgServiceRequest <$> getSshService
