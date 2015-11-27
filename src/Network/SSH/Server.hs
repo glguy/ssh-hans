@@ -49,31 +49,14 @@ sshServer sock = forever $
   do client <- sAccept sock
 
      forkIO $
-       do state             <- initialState
-          let v_s            = sIdent sock
-          v_c               <- sayHello state client v_s
-          (i_s, i_c)        <- startKex state client (map fst (sAuthenticationAlgs sock))
-
-          suite <- case computeSuite i_s i_c of
-                     Nothing -> fail "negotiation failed"
-                     Just suite -> return suite
-
-          hostKeyAlg <- case (`lookup` sAuthenticationAlgs sock) =<<
-                             determineAlg sshServerHostKeyAlgs i_s i_c of
-                          Just alg -> return alg
-                          Nothing  -> fail "No host key algorithm selected"
-
-          (pub_c, pub_s, k) <- startDh client state (suite_kex suite)
-          (sig, cert, token) <- hostKeyAlg
-                              $ \ cert -> kexHash (suite_kex suite)
-                              $ sshDhHash v_c v_s i_c i_s cert pub_c pub_s k
-
-          finishDh client state sig cert pub_s
-          installSecurity client state suite token k
+       do state <- initialState
+          let v_s = sIdent sock
+          v_c <- sayHello state client v_s
+          sessionId <- keyExchangePhase client state v_s v_c (sAuthenticationAlgs sock)
 
           -- Connection established!
 
-          result <- handleAuthentication state client (SshSessionId token)
+          result <- handleAuthentication state client sessionId
           case result of
             Nothing -> send client state
                          (SshMsgDisconnect SshDiscNoMoreAuthMethodsAvailable
@@ -84,6 +67,34 @@ sshServer sock = forever $
                 _             -> return ()
 
        `X.finally` cClose client
+
+keyExchangePhase ::
+  Client ->
+  SshState ->
+  SshIdent {- ^ server -}  ->
+  SshIdent {- ^ client -} ->
+  [ServerCredential] ->
+  IO SshSessionId {- ^ session id for client authentication -}
+keyExchangePhase client state v_s v_c sAuth =
+  do (i_s, i_c) <- startKex state client (map fst sAuth)
+
+     suite <- case computeSuite i_s i_c of
+                Nothing -> fail "negotiation failed"
+                Just suite -> return suite
+
+     hostKeyAlg <- case (`lookup` sAuth) =<<
+                        determineAlg sshServerHostKeyAlgs i_s i_c of
+                     Just alg -> return alg
+                     Nothing  -> fail "No host key algorithm selected"
+
+     (pub_c, pub_s, k) <- startDh client state (suite_kex suite)
+     (sig, cert, token) <- hostKeyAlg
+                         $ \ cert -> kexHash (suite_kex suite)
+                         $ sshDhHash v_c v_s i_c i_s cert pub_c pub_s k
+
+     finishDh client state sig cert pub_s
+     installSecurity client state suite token k
+     return (SshSessionId token)
 
 data CipherSuite = CipherSuite
   { suite_kex :: Kex
