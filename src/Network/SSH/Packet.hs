@@ -87,7 +87,9 @@ putSshPacket seqNum Cipher{..} mac gen render
   bytesLen = S.length bytes
   paddingLen = paddingSize bytesLen
   payloadLen = 1 + bytesLen + paddingLen
-  (padding, gen') = randomBytesGenerate paddingLen gen
+  (padding, gen')
+    | cipherName == "none" = (S.replicate paddingLen 0, gen)
+    | otherwise            = randomBytesGenerate paddingLen gen
 
 -- Original packet format (without ETM)
 putSshPacket seqNum Cipher{..} mac gen render = (packet,Cipher{cipherState=st',..},gen')
