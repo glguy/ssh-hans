@@ -78,11 +78,13 @@ foreign import capi  "zlib.h deflateInit" deflateInit :: Ptr ZStream -> CInt -> 
 foreign import ccall "zlib.h deflate" deflate :: Ptr ZStream -> CInt -> IO CInt
 foreign import ccall "zlib.h &deflateEnd" deflateEndPtr :: FunPtr (Ptr ZStream -> IO ())
 
-data ZError = ZError CInt
+newtype ZError = ZError CInt
   deriving (Eq, Show)
 
 instance Exception ZError
 
+-- | Takes an action that returns a Zlib return value. If an error
+-- value is returned then that value is raised as a 'ZError' exception.
 throwZ :: IO CInt -> IO ()
 throwZ m =
   do result <- m
@@ -91,17 +93,19 @@ throwZ m =
 mkZlibDecompressor :: IO (S.ByteString -> IO L.ByteString)
 mkZlibDecompressor =
   do fz <- newZStream
-     withForeignPtr fz $ \z ->
-       throwZ (inflateInit z)
-     addForeignPtrFinalizer inflateEndPtr fz
+     -- ensure that if init suceeds that the finalizer is added
+     mask_ $ do withForeignPtr fz $ \z ->
+                  throwZ (inflateInit z)
+                addForeignPtrFinalizer inflateEndPtr fz
      return (zlibDriver inflate fz)
 
 mkZlibCompressor :: IO (S.ByteString -> IO L.ByteString)
 mkZlibCompressor =
   do fz <- newZStream
-     withForeignPtr fz $ \z ->
-       throwZ (deflateInit z zCompressLevel)
-     addForeignPtrFinalizer deflateEndPtr fz
+     -- ensure that if init suceeds that the finalizer is added
+     mask_ $ do withForeignPtr fz $ \z ->
+                  throwZ (deflateInit z zCompressLevel)
+                addForeignPtrFinalizer deflateEndPtr fz
      return (zlibDriver deflate fz)
 
 -- | Allocate a new z_stream and prepare it as a valid argument
@@ -117,16 +121,22 @@ newZStream =
           setOpaque  z nullPtr
      return fz
 
+-- | This adds the input bytes to the already initialized z_stream
+-- and then calls the provided 'inflate' or 'deflate' operation
+-- until all output is emitted.
 zlibDriver ::
-  (Ptr ZStream -> CInt -> IO CInt) ->
-  ForeignPtr ZStream ->
-  S.ByteString ->
-  IO L.ByteString
+  (Ptr ZStream -> CInt -> IO CInt) {- 'inflate' or 'deflate' -} ->
+  ForeignPtr ZStream {- ^ initialized z_stream -} ->
+  S.ByteString       {- ^ input bytes -} ->
+  IO L.ByteString    {- ^ output bytes -}
 zlibDriver flate fz input =
 
-  withForeignPtr fz $ \z ->
+  -- safe: zlib doesn't modify the input buffer
   U.unsafeUseAsCStringLen input $ \(inPtr, inLen) ->
 
+  withForeignPtr fz $ \z ->
+
+  -- bytestrings this size will occupy 8 pages exactly
   let bufSize = 32752 in
   allocaBytes bufSize $ \buf ->
 
@@ -136,12 +146,14 @@ zlibDriver flate fz input =
      let loop acc =
            do setNextOut z buf
               setAvailOut z (fromIntegral bufSize)
+
               throwZ (flate z zPartialFlush)
+
               out' <- getAvailOut z
               chunk <- S.packCStringLen (buf, bufSize - fromIntegral out')
 
               let acc' = chunk : acc
-              if out' == 0
+              if out' == 0 -- whole output buffer used
                  then loop acc'
                  else return (L.fromChunks (reverse acc'))
 

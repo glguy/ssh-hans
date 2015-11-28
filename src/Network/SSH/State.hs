@@ -102,13 +102,13 @@ receive :: Client -> SshState -> IO SshMsg
 receive client SshState { .. } = loop
   where
   loop =
-    do (seqNum, cipher, mac, decomp) <- readIORef sshRecvState
+    do (seqNum, cipher, mac, comp) <- readIORef sshRecvState
        (payload, cipher') <- parseFrom client sshBuf
                            $ getSshPacket seqNum cipher mac
-       payload' <- decomp payload
+       payload' <- comp payload
        msg <- either fail return $ runGetLazy getSshMsg payload'
        let !seqNum1 = seqNum + 1
-       writeIORef sshRecvState (seqNum1, cipher', mac, decomp)
+       writeIORef sshRecvState (seqNum1, cipher', mac, comp)
        case msg of
          SshMsgIgnore _                      -> loop
          SshMsgDebug display m _ | display   -> S8.putStrLn m >> loop -- XXX drop controls
