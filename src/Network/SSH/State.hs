@@ -6,7 +6,6 @@ module Network.SSH.State where
 
 
 import           Network.SSH.Ciphers
-import           Network.SSH.Compression
 import           Network.SSH.Keys
 import           Network.SSH.Mac
 import           Network.SSH.Messages
@@ -62,7 +61,7 @@ data Client = Client
   }
 
 
-type CompressFun = S.ByteString -> IO S.ByteString
+type CompressFun = S.ByteString -> IO L.ByteString
 
 data SshState = SshState
   { sshRecvState :: !(IORef (Word32, Cipher, Mac, CompressFun)) -- ^ Client context
@@ -77,10 +76,10 @@ initialState  =
   do drg          <- drgNew
      sshRecvState <- newIORef (0,namedThing cipher_none nullKeys
                                 ,namedThing mac_none ""
-                                ,return) -- no decompression
+                                ,return . L.fromStrict) -- no decompression
      sshSendState <- newMVar  (0,namedThing cipher_none nullKeys
                                 ,namedThing mac_none ""
-                                ,return -- no compression
+                                ,return . L.fromStrict -- no compression
                                 ,drg)
      sshBuf       <- newIORef S.empty
      sshCookie    <- newCookie
@@ -107,7 +106,7 @@ receive client SshState { .. } = loop
        (payload, cipher') <- parseFrom client sshBuf
                            $ getSshPacket seqNum cipher mac
        payload' <- decomp payload
-       msg <- either fail return $ runGet getSshMsg payload'
+       msg <- either fail return $ runGetLazy getSshMsg payload'
        let !seqNum1 = seqNum + 1
        writeIORef sshRecvState (seqNum1, cipher', mac, decomp)
        case msg of

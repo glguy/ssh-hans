@@ -19,7 +19,8 @@ import           Data.Monoid ((<>))
 import           Data.Serialize
                      ( Get, runGet, runPut, label, remaining
                      , lookAhead, skip, getBytes, getWord8, putWord8
-                     , getWord32be, putWord32be, putByteString )
+                     , getWord32be, putWord32be, putByteString
+                     , putLazyByteString )
 
 import           Crypto.Random
 
@@ -50,7 +51,7 @@ sshDhHash v_c v_s i_c i_s k_s e f k = runPut $
 
 -- | Given a way to render something, turn it into an ssh packet.
 putSshPacket ::
-  DRG gen => Word32 -> Cipher -> Mac -> gen -> S.ByteString -> (L.ByteString,Cipher,gen)
+  DRG gen => Word32 -> Cipher -> Mac -> gen -> L.ByteString -> (L.ByteString,Cipher,gen)
 
 putSshPacket seqNum Cipher{..} mac gen bytes
   | mETM mac = (packet,Cipher{cipherState=st',..},gen')
@@ -64,10 +65,10 @@ putSshPacket seqNum Cipher{..} mac gen bytes
 
   body = runPut $
     do putWord8 (fromIntegral paddingLen)
-       putByteString bytes
+       putLazyByteString bytes
        putByteString padding
 
-  bytesLen = S.length bytes
+  bytesLen = fromIntegral (L.length bytes)
   paddingLen = paddingSize bytesLen
   payloadLen = 1 + bytesLen + paddingLen
   (padding, gen')
@@ -85,10 +86,10 @@ putSshPacket seqNum Cipher{..} mac gen bytes = (packet,Cipher{cipherState=st',..
   body = runPut $
     do putWord32be (fromIntegral packetLen)
        putWord8 (fromIntegral paddingLen)
-       putByteString bytes
+       putLazyByteString bytes
        putByteString padding
 
-  bytesLen = S.length bytes
+  bytesLen = fromIntegral (L.length bytes)
   paddingLen = paddingSize (4+bytesLen)
   packetLen = 1 + bytesLen + paddingLen
   (padding, gen') = randomBytesGenerate paddingLen gen
