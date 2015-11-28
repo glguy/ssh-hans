@@ -18,6 +18,7 @@ library
                        Network.SSH.Keys
                        Network.SSH.Ciphers
                        Network.SSH.Connection
+                       Network.SSH.Compression
                        Network.SSH.Mac
                        Network.SSH.Messages
                        Network.SSH.Protocol

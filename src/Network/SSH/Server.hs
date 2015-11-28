@@ -15,6 +15,7 @@ module Network.SSH.Server (
 
 import           Network.SSH.Ciphers
 import           Network.SSH.Connection
+import           Network.SSH.Compression
 import           Network.SSH.Keys
 import           Network.SSH.Mac
 import           Network.SSH.Messages
@@ -95,6 +96,7 @@ data CipherSuite = CipherSuite
   { suite_kex :: Kex
   , suite_c2s_cipher, suite_s2c_cipher :: CipherKeys -> Cipher
   , suite_c2s_mac   , suite_s2c_mac    :: L.ByteString -> Mac
+  , suite_c2s_comp  , suite_s2c_comp   :: Compression
   , suite_host_auth :: SshSessionId -> IO SshSig
   , suite_host_pub :: SshPubCert
   }
@@ -123,8 +125,11 @@ computeSuite auths server client =
 
      (suite_host_pub, suite_host_auth) <- lookupNamed auths =<< det sshServerHostKeyAlgs
 
-     "none" <- det (sshServerToClient.sshCompAlgs)
-     "none" <- det (sshClientToServer.sshCompAlgs)
+     s2c_comp_name <- det (sshServerToClient.sshCompAlgs)
+     suite_s2c_comp <- lookupNamed allCompression s2c_comp_name
+
+     c2s_comp_name <- det (sshClientToServer.sshCompAlgs)
+     suite_c2s_comp <- lookupNamed allCompression c2s_comp_name
 
      return CipherSuite{..}
 
@@ -139,20 +144,24 @@ determineAlg server client f = find (`elem` f server) (f client)
 -- | Install new keys (and algorithms) into the SshState.
 transitionKeysOutgoing :: CipherSuite -> Keys -> SshState -> IO ()
 transitionKeysOutgoing CipherSuite{..} Keys{..} SshState{..} =
-  modifyMVar_ sshSendState $ \(seqNum,_,_,drg) ->
-    return ( seqNum
-           , suite_s2c_cipher k_s2c_cipherKeys
-           , suite_s2c_mac    k_s2c_integKey
-           , drg
-           )
+  do compress <- makeCompress suite_s2c_comp
+     modifyMVar_ sshSendState $ \(seqNum,_,_,_,drg) ->
+       return ( seqNum
+              , suite_s2c_cipher k_s2c_cipherKeys
+              , suite_s2c_mac    k_s2c_integKey
+              , compress
+              , drg
+              )
 
 transitionKeysIncoming :: CipherSuite -> Keys -> SshState -> IO ()
 transitionKeysIncoming CipherSuite{..} Keys{..} SshState{..} =
-  modifyIORef sshRecvState $ \(seqNum, _, _) ->
-    ( seqNum
-    , suite_c2s_cipher k_c2s_cipherKeys
-    , suite_c2s_mac    k_c2s_integKey
-    )
+  do decompress <- makeDecompress suite_c2s_comp
+     modifyIORef sshRecvState $ \(seqNum, _, _, _) ->
+       ( seqNum
+       , suite_c2s_cipher k_c2s_cipherKeys
+       , suite_c2s_mac    k_c2s_integKey
+       , decompress
+       )
 
 -- | Exchange identification information
 sayHello :: SshState -> Client -> SshIdent -> IO SshIdent
@@ -167,8 +176,8 @@ supportedKex hostKeyAlgs cookie =
     { sshKexAlgs           = (map nameOf allKex)
     , sshServerHostKeyAlgs = hostKeyAlgs
     , sshEncAlgs           = SshAlgs (map nameOf allCipher) (map nameOf allCipher)
-    , sshMacAlgs           = SshAlgs (map nameOf allMac   ) (map nameOf allMac   )
-    , sshCompAlgs          = SshAlgs [ "none" ] [ "none" ]
+    , sshMacAlgs           = SshAlgs (map nameOf allMac) (map nameOf allMac)
+    , sshCompAlgs          = SshAlgs (map nameOf allCompression) (map nameOf allCompression)
     , sshLanguages         = SshAlgs [] []
     , sshFirstKexFollows   = False
     , sshProposalCookie    = cookie
