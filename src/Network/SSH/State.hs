@@ -1,5 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE BangPatterns #-}
 
 module Network.SSH.State where
 
@@ -14,7 +15,7 @@ import           Network.SSH.TerminalModes
 
 import           Data.IORef
 import           Data.Word
-import           Data.Serialize.Get
+import           Data.Serialize
 import           Control.Concurrent
 import           Data.ByteString.Short (ShortByteString)
 import qualified Data.ByteString as S
@@ -84,7 +85,7 @@ newCookie = SshCookie `fmap` getRandomBytes 16
 send :: Client -> SshState -> SshMsg -> IO ()
 send client SshState { .. } msg =
   modifyMVar_ sshSendState $ \(seqNum, cipher, mac, gen) ->
-    do let (pkt,cipher',gen') = putSshPacket seqNum cipher mac gen (putSshMsg msg)
+    do let (pkt,cipher',gen') = putSshPacket seqNum cipher mac gen (runPut (putSshMsg msg))
        cPut client pkt
        return (seqNum+1, cipher',mac, gen')
 
@@ -94,8 +95,11 @@ receive client SshState { .. } = loop
   where
   loop =
     do (seqNum, cipher, mac) <- readIORef sshRecvState
-       (msg, cipher') <- parseFrom client sshBuf (getSshPacket seqNum cipher mac getSshMsg)
-       writeIORef sshRecvState (seqNum+1, cipher', mac)
+       (payload, cipher') <- parseFrom client sshBuf
+                           $ getSshPacket seqNum cipher mac
+       msg <- either fail return $ runGet getSshMsg payload
+       let !seqNum1 = seqNum + 1
+       writeIORef sshRecvState (seqNum1, cipher', mac)
        case msg of
          SshMsgIgnore _                      -> loop
          SshMsgDebug display m _ | display   -> S8.putStrLn m >> loop -- XXX drop controls
