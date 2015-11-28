@@ -64,7 +64,9 @@ data SshState = SshState
   { sshRecvState :: !(IORef (Word32, Cipher,Mac)) -- ^ Client context
   , sshBuf       :: !(IORef S.ByteString)
   , sshSendState :: !(MVar (Word32, Cipher, Mac, ChaChaDRG)) -- ^ Server encryption context
+  , sshCookie    :: SshCookie
   }
+
 
 initialState :: IO SshState
 initialState  =
@@ -72,7 +74,12 @@ initialState  =
      sshRecvState <- newIORef (0,namedThing cipher_none nullKeys, namedThing mac_none ""    )
      sshSendState <- newMVar  (0,namedThing cipher_none nullKeys, namedThing mac_none "",drg)
      sshBuf       <- newIORef S.empty
+     sshCookie    <- newCookie
      return SshState { .. }
+
+-- | Construct a new, random cookie
+newCookie :: IO SshCookie
+newCookie = SshCookie `fmap` getRandomBytes 16
 
 send :: Client -> SshState -> SshMsg -> IO ()
 send client SshState { .. } msg =

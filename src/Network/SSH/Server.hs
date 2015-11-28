@@ -25,7 +25,6 @@ import           Network.SSH.State
 import           Control.Concurrent
 import           Control.Monad (forever)
 import qualified Control.Exception as X
-import           Crypto.Random (getRandomBytes)
 import           Data.ByteString.Short (ShortByteString)
 import qualified Data.ByteString.Char8 as S
 import qualified Data.ByteString.Lazy as L
@@ -35,8 +34,7 @@ import           Data.Serialize ( runPutLazy )
 
 -- Public API ------------------------------------------------------------------
 
-type ServerCredential =
-  (ShortByteString, (SshPubCert -> S.ByteString) -> IO (SshSig, SshPubCert, S.ByteString))
+type ServerCredential = Named (SshPubCert, SshSessionId -> IO SshSig)
 
 data Server = Server
   { sAccept :: IO Client
@@ -76,86 +74,85 @@ keyExchangePhase ::
   [ServerCredential] ->
   IO SshSessionId {- ^ session id for client authentication -}
 keyExchangePhase client state v_s v_c sAuth =
-  do (i_s, i_c) <- startKex state client (map fst sAuth)
+  do (i_s, i_c) <- startKex state client (map nameOf sAuth)
+     suite <- maybe (fail "negotiation failed") return
+            $ computeSuite sAuth i_s i_c
 
-     suite <- case computeSuite i_s i_c of
-                Nothing -> fail "negotiation failed"
-                Just suite -> return suite
+     SshMsgKexDhInit pub_c <- receive client state
+     (pub_s, k)            <- kexRun (suite_kex suite) pub_c
 
-     hostKeyAlg <- case (`lookup` sAuth) =<<
-                        determineAlg sshServerHostKeyAlgs i_s i_c of
-                     Just alg -> return alg
-                     Nothing  -> fail "No host key algorithm selected"
+     let sid = SshSessionId
+             $ kexHash (suite_kex suite)
+             $ sshDhHash v_c v_s i_c i_s (suite_host_pub suite) pub_c pub_s k
 
-     (pub_c, pub_s, k) <- startDh client state (suite_kex suite)
-     (sig, cert, token) <- hostKeyAlg
-                         $ \ cert -> kexHash (suite_kex suite)
-                         $ sshDhHash v_c v_s i_c i_s cert pub_c pub_s k
+     sig <- suite_host_auth suite sid
+     send client state (SshMsgKexDhReply (suite_host_pub suite) pub_s sig)
 
-     finishDh client state sig cert pub_s
-     installSecurity client state suite token k
-     return (SshSessionId token)
+     installSecurity client state suite sid k
+     return sid
 
 data CipherSuite = CipherSuite
   { suite_kex :: Kex
   , suite_c2s_cipher, suite_s2c_cipher :: CipherKeys -> Cipher
   , suite_c2s_mac   , suite_s2c_mac    :: L.ByteString -> Mac
+  , suite_host_auth :: SshSessionId -> IO SshSig
+  , suite_host_pub :: SshPubCert
   }
 
-computeSuite :: SshProposal -> SshProposal -> Maybe CipherSuite
-computeSuite server client =
-  do suite_kex        <- lookupNamed allKex
-                     =<< determineAlg sshKexAlgs server client
+-- | Compute a cipher suite given two proposals. The first algorithm
+-- requested by the client that the server also supports is selected.
+computeSuite :: [ServerCredential] -> SshProposal -> SshProposal -> Maybe CipherSuite
+computeSuite auths server client =
+  do let det = determineAlg server client
 
-     c2s_cipher_name  <- determineAlg (sshClientToServer.sshEncAlgs) server client
+     suite_kex        <- lookupNamed allKex =<< det sshKexAlgs
+
+     c2s_cipher_name  <- det (sshClientToServer.sshEncAlgs)
      suite_c2s_cipher <- lookupNamed allCipher c2s_cipher_name
 
-     s2c_cipher_name  <- determineAlg (sshServerToClient.sshEncAlgs) server client
+     s2c_cipher_name  <- det (sshServerToClient.sshEncAlgs)
      suite_s2c_cipher <- lookupNamed allCipher s2c_cipher_name
 
      suite_c2s_mac <- if c2s_cipher_name `elem` aeadModes
                         then Just (namedThing mac_none)
-                        else lookupNamed allMac
-                         =<< determineAlg (sshClientToServer.sshMacAlgs) server client
+                        else lookupNamed allMac =<< det (sshClientToServer.sshMacAlgs)
 
      suite_s2c_mac <- if s2c_cipher_name `elem` aeadModes
                         then Just (namedThing mac_none)
-                        else lookupNamed allMac
-                     =<< determineAlg (sshServerToClient.sshMacAlgs) server client
+                        else lookupNamed allMac =<< det (sshServerToClient.sshMacAlgs)
 
-     "none" <- determineAlg (sshServerToClient.sshCompAlgs) server client
-     "none" <- determineAlg (sshClientToServer.sshCompAlgs) server client
+     (suite_host_pub, suite_host_auth) <- lookupNamed auths =<< det sshServerHostKeyAlgs
+
+     "none" <- det (sshServerToClient.sshCompAlgs)
+     "none" <- det (sshClientToServer.sshCompAlgs)
 
      return CipherSuite{..}
 
 -- | Select first client choice acceptable to the server
 determineAlg ::
-  (SshProposal -> [ShortByteString]) {- ^ selector -} ->
   SshProposal {- ^ server -} ->
   SshProposal {- ^ client -} ->
+  (SshProposal -> [ShortByteString]) {- ^ selector -} ->
   Maybe ShortByteString
-determineAlg f server client = find (`elem` f server) (f client)
+determineAlg server client f = find (`elem` f server) (f client)
 
 -- | Install new keys (and algorithms) into the SshState.
-transitionKeys :: CipherSuite -> Keys -> SshState -> IO ()
-transitionKeys CipherSuite{..} Keys{..} SshState{..} =
+transitionKeysOutgoing :: CipherSuite -> Keys -> SshState -> IO ()
+transitionKeysOutgoing CipherSuite{..} Keys{..} SshState{..} =
+  modifyMVar_ sshSendState $ \(seqNum,_,_,drg) ->
+    return ( seqNum
+           , suite_s2c_cipher k_s2c_cipherKeys
+           , suite_s2c_mac    k_s2c_integKey
+           , drg
+           )
 
-  do modifyIORef sshRecvState $ \(seqNum, _, _) ->
-               ( seqNum
-               , suite_c2s_cipher k_c2s_cipherKeys
-               , suite_c2s_mac    k_c2s_integKey
-               )
-
-     modifyMVar_ sshSendState $ \(seqNum,_,_,drg) ->
-        return ( seqNum
-               , suite_s2c_cipher k_s2c_cipherKeys
-               , suite_s2c_mac    k_s2c_integKey
-               , drg
-               )
-
-     putStrLn "New keys installed."
-
-
+transitionKeysIncoming :: CipherSuite -> Keys -> SshState -> IO ()
+transitionKeysIncoming CipherSuite{..} Keys{..} SshState{..} =
+  modifyIORef sshRecvState $ \(seqNum, _, _) ->
+    ( seqNum
+    , suite_c2s_cipher k_c2s_cipherKeys
+    , suite_c2s_mac    k_c2s_integKey
+    )
 
 -- | Exchange identification information
 sayHello :: SshState -> Client -> SshIdent -> IO SshIdent
@@ -178,65 +175,38 @@ supportedKex hostKeyAlgs cookie =
     , sshCompAlgs          = SshAlgs [ "none" ] [ "none" ]
     , sshLanguages         = SshAlgs [] []
     , sshFirstKexFollows   = False
-    , sshCookie            = cookie
+    , sshProposalCookie    = cookie
     }
 
-newCookie :: IO SshCookie
-newCookie = fmap SshCookie (getRandomBytes 16)
-
-startKex :: SshState -> Client -> [ShortByteString] -> IO (SshProposal, SshProposal)
+startKex ::
+  SshState -> Client -> [ShortByteString] ->
+  IO (SshProposal, SshProposal)
 startKex state client hostKeyAlgs =
-  do cookie <- newCookie
-     let i_s = supportedKex hostKeyAlgs cookie
-
+  do let i_s = supportedKex hostKeyAlgs (sshCookie state)
      send client state (SshMsgKexInit i_s)
-
-     i_c <- waitForClientKex
-     putStrLn "Got KexInit"
+     SshMsgKexInit i_c <- receive client state
      return (i_s, i_c)
-  where
-  waitForClientKex =
-    do msg <- receive client state
-       case msg of
-         SshMsgKexInit i_c -> return i_c
-         _                 -> waitForClientKex -- XXX What can go here?
-
-startDh :: Client -> SshState -> Kex
-        -> IO (S.ByteString, S.ByteString, S.ByteString)
-           {- ^ client public, server public, shared secret -}
-startDh client state kex =
-  do SshMsgKexDhInit pub_c <- receive client state
-     (pub_s, k) <- kexRun kex pub_c
-     return (pub_c, pub_s, k)
-
-finishDh ::
-  Client -> SshState ->
-  SshSig -> SshPubCert ->
-  S.ByteString {- ^ public dh -} ->
-  IO ()
-finishDh client state sig cert pub_s =
-  do putStrLn "Sending DH reply"
-     send client state (SshMsgKexDhReply cert pub_s sig)
-
 
 installSecurity ::
   Client -> SshState -> CipherSuite ->
-  S.ByteString {- ^ sign this -} ->
+  SshSessionId ->
   S.ByteString {- ^ shared secret -} ->
   IO ()
-installSecurity client state suite token k =
-  do putStrLn "Waiting for response"
-     SshMsgNewKeys <- receive client state
+installSecurity client state suite sid k =
+  do let keys = genKeys (kexHash (suite_kex suite)) k sid
+
      send client state SshMsgNewKeys
-     let keys = genKeys (kexHash (suite_kex suite)) k token
-     transitionKeys suite keys state
+     transitionKeysOutgoing suite keys state
+
+     SshMsgNewKeys <- receive client state
+     transitionKeysIncoming suite keys state
 
 
 handleAuthentication ::
   SshState -> Client -> SshSessionId -> IO (Maybe (S.ByteString, SshService))
 handleAuthentication state client session_id =
   do let notAvailable = send client state
-                      $ SshMsgDisconnect SshDiscServiceNotAvailable "" "en-us"
+                      $ SshMsgDisconnect SshDiscServiceNotAvailable "" ""
 
      req <- receive client state
      case req of

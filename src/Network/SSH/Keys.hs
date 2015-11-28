@@ -4,6 +4,7 @@ module Network.SSH.Keys where
 
 import           Network.SSH.Protocol ( getString, getMpInt, putMpInt, putString )
 import           Network.SSH.Named
+import           Network.SSH.Messages
 
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Lazy as L
@@ -37,9 +38,9 @@ data Keys = Keys
   }
 
 genKeys :: (S.ByteString -> S.ByteString)
-        -> S.ByteString -> S.ByteString
+        -> S.ByteString -> SshSessionId
         -> Keys
-genKeys hash k h = Keys
+genKeys hash k sid = Keys
   { k_c2s_cipherKeys = CipherKeys
       { ckInitialIV = mkKey "A"
       , ckEncKey    = mkKey "C"
@@ -52,15 +53,15 @@ genKeys hash k h = Keys
   , k_s2c_integKey  = mkKey "F"
   }
   where
-  mkKey = genKey hash k h
+  mkKey = genKey hash k sid
 
 
 -- | Generate an initial key stream.  Note, that the returned lazy bytestring is
 -- an infinite list of chunks, so just take as much as is necessary.
 genKey :: (S.ByteString -> S.ByteString)
-       -> S.ByteString -> S.ByteString
+       -> S.ByteString -> SshSessionId
        -> S.ByteString -> L.ByteString
-genKey hash k h = \ x ->
+genKey hash k (SshSessionId h) = \ x ->
   let k_1 = chunk (L.fromChunks [ x, h ])
    in k_1 `L.append` chunks k_1
   where

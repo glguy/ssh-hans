@@ -200,7 +200,7 @@ data SshAlgs = SshAlgs
   } deriving (Eq,Show,Read)
 
 data SshProposal = SshProposal
-  { sshCookie            :: !SshCookie
+  { sshProposalCookie    :: !SshCookie
   , sshKexAlgs           :: NameList
   , sshServerHostKeyAlgs :: NameList
   , sshEncAlgs           :: !SshAlgs
@@ -354,7 +354,7 @@ putSshAlgs SshAlgs { .. } =
 
 putSshProposal :: Putter SshProposal
 putSshProposal SshProposal{ .. } =
-  do putSshCookie sshCookie
+  do putSshCookie sshProposalCookie
      putNameList sshKexAlgs
      putNameList sshServerHostKeyAlgs
      putSshAlgs sshEncAlgs
@@ -608,7 +608,7 @@ getSshAlgs  =
 
 getSshProposal :: Get SshProposal
 getSshProposal  = label "SshProposal" $
-  do sshCookie            <- label "sshCookie"            getSshCookie
+  do sshProposalCookie    <- label "sshCookie"            getSshCookie
      sshKexAlgs           <- label "sshKexAlgs"           getNameList
      sshServerHostKeyAlgs <- label "sshServerHostKeyAlgs" getNameList
      sshEncAlgs           <- label "sshEncAlgs"           getSshAlgs

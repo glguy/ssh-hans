@@ -68,26 +68,14 @@ mkServer auths creds sock = Server
   , sIdent = greeting
   }
 
-rsaAuth ::
-  RSA.PublicKey ->
-  RSA.PrivateKey ->
-  (SshPubCert -> S.ByteString) ->
-  IO (SshSig, SshPubCert, S.ByteString)
-rsaAuth pubKey privKey makeToken =
-  do let cert  = SshPubRsa (RSA.public_e pubKey) (RSA.public_n pubKey)
-         token = makeToken cert
-     Right rawsig <- RSA.signSafer (Just Hash.SHA1) privKey token
-     return (SshSigRsa rawsig, cert, token)
+rsaAuth :: RSA.PrivateKey -> SshSessionId -> IO SshSig
+rsaAuth privKey (SshSessionId token) =
+  do Right sig <- RSA.signSafer (Just Hash.SHA1) privKey token
+     return (SshSigRsa sig)
 
-edAuth ::
-  Ed25519.SecretKey -> Ed25519.PublicKey ->
-  (SshPubCert -> S.ByteString) ->
-  IO (SshSig, SshPubCert, S.ByteString)
-edAuth priv pub makeToken =
-  do let cert = SshPubEd25519 (convert pub)
-         token = makeToken cert
-         sig = Ed25519.sign priv pub token
-     return (SshSigEd25519 (convert sig), cert, token)
+edAuth :: Ed25519.SecretKey -> Ed25519.PublicKey -> SshSessionId -> IO SshSig
+edAuth priv pub (SshSessionId token) =
+  return (SshSigEd25519 (convert (Ed25519.sign priv pub token)))
 
 convertWindowSize :: SshWindowSize -> Winsize
 convertWindowSize winsize =
@@ -179,7 +167,9 @@ loadRsaAuth =
                  writeFile "server.priv" (show priv)
                  return (pub,priv)
 
-     return ("ssh-rsa", rsaAuth pub priv)
+
+     let cert = SshPubRsa (RSA.public_e pub) (RSA.public_n pub)
+     return (Named "ssh-rsa" (cert, rsaAuth priv))
 
 loadEdAuth :: IO ServerCredential
 loadEdAuth =
@@ -195,4 +185,4 @@ loadEdAuth =
 
      priv <- throwCryptoErrorIO (Ed25519.secretKey bytes)
      let pub = Ed25519.toPublic priv
-     return ("ssh-ed25519", edAuth priv pub)
+     return (Named "ssh-ed25519" (SshPubEd25519 (convert pub), edAuth priv pub))
