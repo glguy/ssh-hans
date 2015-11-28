@@ -56,10 +56,7 @@ main = withSocketsDo $
      sshServer (mkServer sAuth creds sock)
 
 greeting :: SshIdent
-greeting  = SshIdent { sshProtoVersion    = "2.0"
-                     , sshSoftwareVersion = "SSH_HaLVM_2.0"
-                     , sshComments        = ""
-                     }
+greeting  = SshIdent "SSH-2.0-SSH_HaLVM_2.0"
 
 mkServer :: [ServerCredential] -> [ClientCredential] -> Socket -> Server
 mkServer auths creds sock = Server

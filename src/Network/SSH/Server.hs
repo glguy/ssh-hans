@@ -29,8 +29,8 @@ import           Data.ByteString.Short (ShortByteString)
 import qualified Data.ByteString.Char8 as S
 import qualified Data.ByteString.Lazy as L
 import           Data.List (find)
+import           Data.Monoid ((<>))
 import           Data.IORef ( modifyIORef )
-import           Data.Serialize ( runPutLazy )
 
 -- Public API ------------------------------------------------------------------
 
@@ -157,13 +157,9 @@ transitionKeysIncoming CipherSuite{..} Keys{..} SshState{..} =
 -- | Exchange identification information
 sayHello :: SshState -> Client -> SshIdent -> IO SshIdent
 sayHello state client v_s =
-  do cPut client (runPutLazy (putSshIdent v_s))
+  do cPut client (L.fromStrict (sshIdentString v_s <> "\r\n"))
      -- parseFrom used because ident doesn't use the normal framing
-     msg <- parseFrom client (sshBuf state) getSshIdent
-     print msg
-     case msg of
-       Right v_c -> return v_c
-       Left err  -> fail err
+     parseFrom client (sshBuf state) getSshIdent
 
 supportedKex :: [ShortByteString] -> SshCookie -> SshProposal
 supportedKex hostKeyAlgs cookie =

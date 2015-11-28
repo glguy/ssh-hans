@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE RecordWildCards #-}
 
 module Network.SSH.Packet where
@@ -8,7 +9,8 @@ import Network.SSH.Mac
 import Network.SSH.Messages
 import Network.SSH.Protocol
 
-import           Control.Monad ( unless, guard, msum )
+import           Control.Applicative ((<|>))
+import           Control.Monad (unless, guard)
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Lazy as L
 import           Data.Char ( chr )
@@ -17,14 +19,12 @@ import           Data.Monoid ((<>))
 import           Data.Serialize
                      ( Get, Put, runGet, runPut, label, isolate, remaining
                      , lookAhead, skip, getBytes, getWord8, putWord8
-                     , getWord32be, putWord32be, Putter, putByteString )
+                     , getWord32be, putWord32be, putByteString )
 
 import           Crypto.Random
 
-data SshIdent = SshIdent { sshProtoVersion
-                         , sshSoftwareVersion
-                         , sshComments        :: !S.ByteString
-                         } deriving (Show,Eq)
+newtype SshIdent = SshIdent { sshIdentString :: S.ByteString }
+  deriving (Show,Read,Eq)
 
 -- Hash Generation -------------------------------------------------------------
 
@@ -38,32 +38,15 @@ sshDhHash :: SshIdent       -- ^ V_C
           -> S.ByteString   -- ^ K
           -> S.ByteString
 sshDhHash v_c v_s i_c i_s k_s e f k = runPut $
-  do putString (renderIdent v_c)
-     putString (renderIdent v_s)
+  do putString (sshIdentString v_c)
+     putString (sshIdentString v_s)
      putString (runPut (putSshMsg (SshMsgKexInit i_c)))
      putString (runPut (putSshMsg (SshMsgKexInit i_s)))
      putString (runPut (putSshPubCert k_s))
      putByteString e -- encoding varies
      putByteString f -- encoding varies
      putByteString k -- encoding varies
-  where
-  -- special version of putSshIdent that drops the CR-LF at the end
-  renderIdent v = let bytes = runPut (putSshIdent v)
-                  in S.take (S.length bytes - 2) bytes
 
-
--- Rendering -------------------------------------------------------------------
-
-putSshIdent :: Putter SshIdent
-putSshIdent SshIdent { .. } =
-  do putByteString "SSH-"
-     putByteString sshProtoVersion
-     putByteString "-"
-     putByteString sshSoftwareVersion
-     unless (S.null sshComments) $
-       do putByteString " "
-          putByteString sshComments
-     putByteString "\r\n"
 
 -- | Given a way to render something, turn it into an ssh packet.
 putSshPacket :: DRG gen => Word32 -> Cipher -> Mac -> gen -> Put -> (L.ByteString,Cipher,gen)
@@ -129,35 +112,22 @@ getCh c =
   do c' <- getWord8
      guard (c == chr (fromIntegral c'))
 
-getBytesUntil :: Get () -> Get S.ByteString
-getBytesUntil end =
-  do start      <- remaining
-     (off,stop) <- lookAhead (go 0)
-     guard (off > 0)
-     bytes      <- getBytes off
-     -- skip the length of the ending action
-     skip (start - (stop + off))
-     return bytes
+getOneLine :: Get S.ByteString
+getOneLine =
+  do n <- lookAhead (findCrLf 0)
+     xs <- getBytes n
+     skip 2
+     return xs
   where
-  go off = msum [ do end
-                     stop <- remaining
-                     return (off, stop)
-                , do _ <- getWord8
-                     go $! off + 1
-                ]
+  findCrLf !acc = here acc <|> (skip 1 >> findCrLf (acc+1))
+  here acc = do "\r\n" <- getBytes 2
+                return acc
 
 getSshIdent :: Get SshIdent
 getSshIdent  = label "SshIdent" $
-  do "SSH"              <- getBytesUntil (getCh '-')
-     sshProtoVersion    <- getBytesUntil (getCh '-')
-
-     msum [ do sshSoftwareVersion <- getBytesUntil (getCh ' ')
-               sshComments        <- getBytesUntil  getCrLf
-               return SshIdent { .. }
-          , do sshSoftwareVersion <- getBytesUntil  getCrLf
-               let sshComments = ""
-               return SshIdent { .. }
-          ]
+  do str <- getOneLine
+     guard (S.isPrefixOf "SSH-2.0-" str)
+     return (SshIdent str)
 
 -- | Given a way to parse the payload of an ssh packet, do the required
 -- book-keeping surrounding the data.

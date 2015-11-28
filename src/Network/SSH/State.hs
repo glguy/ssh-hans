@@ -94,39 +94,28 @@ receive client SshState { .. } = loop
   where
   loop =
     do (seqNum, cipher, mac) <- readIORef sshRecvState
-       res <- parseFrom client sshBuf (getSshPacket seqNum cipher mac getSshMsg)
-       case res of
+       (msg, cipher') <- parseFrom client sshBuf (getSshPacket seqNum cipher mac getSshMsg)
+       writeIORef sshRecvState (seqNum+1, cipher', mac)
+       case msg of
+         SshMsgIgnore _                      -> loop
+         SshMsgDebug display m _ | display   -> S8.putStrLn m >> loop -- XXX drop controls
+                                 | otherwise -> loop
+         _                                   -> return msg
 
-         Right (msg, cipher') ->
-           do writeIORef sshRecvState (seqNum+1, cipher', mac)
-              case msg of
-                SshMsgIgnore _                      -> loop
-                SshMsgDebug display m _ | display   -> S8.putStrLn m >> loop
-                                        | otherwise -> loop
-                _                                   -> return msg
 
-         Left err ->
-           do putStrLn err
-              fail "Failed when reading from client"
-
-parseFrom :: Client -> IORef S.ByteString -> Get a -> IO (Either String a)
+parseFrom :: Client -> IORef S.ByteString -> Get a -> IO a
 parseFrom handle buffer body =
   do bytes <- readIORef buffer
-
-     if S.null bytes
-        then go True (Partial (runGetPartial body))
-        else go True (runGetPartial body bytes)
+     go (runGetPartial body bytes)
 
   where
+  -- boolean: beginning of packet
+  go (Partial k) =
+    do bytes <- cGet handle 32752
+       go (k bytes)
 
-  go True  (Partial k) = do bytes <- cGet handle 1024
-                            if S.null bytes
-                               then fail "Client closed connection"
-                               else go (S.length bytes == 1024) (k bytes)
+  go (Done a bs) =
+    do writeIORef buffer bs
+       return a
 
-  go False (Partial k) = go False (k S.empty)
-  go _     (Done a bs) = do writeIORef buffer bs
-                            return (Right a)
-  go _     (Fail s _)  = return (Left s)
-
-
+  go (Fail s _) = fail s
