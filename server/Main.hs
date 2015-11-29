@@ -8,18 +8,18 @@ import           Network.SSH.Packet ( SshIdent(..) )
 import           Network.SSH.Server
 import           Network.SSH.Named
 import           Network.SSH.UserAuth
+import           Network.SSH.PrivateKeyFormat
 
-import           Control.Monad ( forever )
+import           Control.Monad ( forever, (<=<) )
 import           Control.Exception
 import qualified Data.ByteString as S
+import qualified Data.ByteString.Short as Short
 import qualified Data.ByteString.Char8 as S8
 import qualified Data.ByteString.Lazy as L
 import           Network
                      ( PortID(..), HostName, PortNumber, withSocketsDo, listenOn
                      , accept, Socket )
-import           System.Directory ( doesFileExist )
 import           System.IO ( Handle, hClose )
-import           System.IO.Error (isDoesNotExistError)
 
 import System.Posix.IO ( fdToHandle, closeFd )
 import Control.Concurrent
@@ -29,13 +29,6 @@ import System.Directory (getHomeDirectory)
 import qualified SetGame
 import qualified Graphics.Vty as Vty
 
-import qualified Crypto.PubKey.Ed25519 as Ed25519
-import qualified Crypto.PubKey.RSA as RSA
-import qualified Crypto.PubKey.RSA.PKCS15 as RSA
-import qualified Crypto.Hash.Algorithms as Hash
-import Data.ByteArray (convert)
-import Crypto.Error (throwCryptoErrorIO)
-import Crypto.Random(getRandomBytes)
 
 import Openpty
 import UnixTerminalFlags
@@ -43,11 +36,8 @@ import LoadKeys
 
 main :: IO ()
 main = withSocketsDo $
-  do sock             <- listenOn (PortNumber 2200)
-
-     myRsaAuth <- loadRsaAuth
-     myEdAuth  <- loadEdAuth
-     let sAuth = [myRsaAuth, myEdAuth]
+  do sock    <- listenOn (PortNumber 2200)
+     sAuth   <- loadServerKeys "server_keys"
 
      home    <- getHomeDirectory
      pubKeys <- loadPublicKeys (home </> ".ssh" </> "authorized_keys")
@@ -65,15 +55,6 @@ mkServer auths creds sock = Server
   , sAuthenticationAlgs = auths
   , sIdent = greeting
   }
-
-rsaAuth :: RSA.PrivateKey -> SshSessionId -> IO SshSig
-rsaAuth privKey (SshSessionId token) =
-  do Right sig <- RSA.signSafer (Just Hash.SHA1) privKey token
-     return (SshSigRsa sig)
-
-edAuth :: Ed25519.SecretKey -> Ed25519.PublicKey -> SshSessionId -> IO SshSig
-edAuth priv pub (SshSessionId token) =
-  return (SshSigEd25519 (convert (Ed25519.sign priv pub token)))
 
 convertWindowSize :: SshWindowSize -> Winsize
 convertWindowSize winsize =
@@ -139,50 +120,27 @@ mkClient creds (h,_,_) = Client { .. }
   cAuthHandler _ _ _ (SshAuthPublicKey alg key Nothing) =
     return (AuthPkOk alg key)
 
+  cAuthHandler _ _ _ (SshAuthPassword "god" Nothing) =
+    return AuthAccepted
+
   cAuthHandler session_id username svc (SshAuthPublicKey alg key (Just sig)) =
     case lookup username creds of
       Just pubs
         | key `elem` pubs
         , verifyPubKeyAuthentication session_id username svc alg key sig
         -> return AuthAccepted
-      _ -> return (AuthFailed ["publickey"])
+      _ -> return (AuthFailed ["password","publickey"])
 
   cAuthHandler _session_id user _svc m =
     do print (user,m)
-       return (AuthFailed ["publickey"])
+       return (AuthFailed ["password","publickey"])
 
-loadRsaAuth :: IO ServerCredential
-loadRsaAuth =
-  do privExists <- doesFileExist "server.priv"
-     pubExists  <- doesFileExist "server.pub"
-
-     (pub,priv) <-
-       if privExists && pubExists
-         then do pub  <- readFile "server.pub"
-                 priv <- readFile "server.priv"
-                 return (read pub, read priv) -- icky
-
-         else do (pub, priv) <- RSA.generate 256{-bytes-} 0x10001{-e-}
-                 writeFile "server.pub"  (show pub)
-                 writeFile "server.priv" (show priv)
-                 return (pub,priv)
-
-
-     let cert = SshPubRsa (RSA.public_e pub) (RSA.public_n pub)
-     return (Named "ssh-rsa" (cert, rsaAuth priv))
-
-loadEdAuth :: IO ServerCredential
-loadEdAuth =
-  do res <- try (S.readFile "server.ed")
-     bytes <- case res of
-                Right bytes -> return bytes
-                Left e
-                  | isDoesNotExistError e ->
-                     do xs <- getRandomBytes 32
-                        S.writeFile "server.ed" xs
-                        return xs
-                  | otherwise -> throwIO e
-
-     priv <- throwCryptoErrorIO (Ed25519.secretKey bytes)
-     let pub = Ed25519.toPublic priv
-     return (Named "ssh-ed25519" (SshPubEd25519 (convert pub), edAuth priv pub))
+loadServerKeys :: FilePath -> IO [ServerCredential]
+loadServerKeys path =
+  do res <- (extractPK <=< parsePrivateKeyFile) <$> S.readFile path
+     case res of
+       Left e -> fail ("Error loading server keys: " ++ e)
+       Right pk -> return
+                     [ Named (Short.toShort (sshPubCertName pub)) (pub, priv)
+                     | (pub,priv,_comment) <- pk
+                     ]

@@ -35,7 +35,7 @@ import           Data.IORef ( modifyIORef )
 
 -- Public API ------------------------------------------------------------------
 
-type ServerCredential = Named (SshPubCert, SshSessionId -> IO SshSig)
+type ServerCredential = Named (SshPubCert, PrivateKey)
 
 data Server = Server
   { sAccept :: IO Client
@@ -86,7 +86,7 @@ keyExchangePhase client state v_s v_c sAuth =
              $ kexHash (suite_kex suite)
              $ sshDhHash v_c v_s i_c i_s (suite_host_pub suite) pub_c pub_s k
 
-     sig <- suite_host_auth suite sid
+     sig <- sign (suite_host_priv suite) sid
      send client state (SshMsgKexDhReply (suite_host_pub suite) pub_s sig)
 
      installSecurity client state suite sid k
@@ -97,7 +97,7 @@ data CipherSuite = CipherSuite
   , suite_c2s_cipher, suite_s2c_cipher :: CipherKeys -> Cipher
   , suite_c2s_mac   , suite_s2c_mac    :: L.ByteString -> Mac
   , suite_c2s_comp  , suite_s2c_comp   :: Compression
-  , suite_host_auth :: SshSessionId -> IO SshSig
+  , suite_host_priv :: PrivateKey
   , suite_host_pub :: SshPubCert
   }
 
@@ -123,7 +123,7 @@ computeSuite auths server client =
                         then Just (namedThing mac_none)
                         else lookupNamed allMac =<< det (sshServerToClient.sshMacAlgs)
 
-     (suite_host_pub, suite_host_auth) <- lookupNamed auths =<< det sshServerHostKeyAlgs
+     (suite_host_pub, suite_host_priv) <- lookupNamed auths =<< det sshServerHostKeyAlgs
 
      s2c_comp_name <- det (sshServerToClient.sshCompAlgs)
      suite_s2c_comp <- lookupNamed allCompression s2c_comp_name

@@ -18,6 +18,10 @@ import qualified Crypto.PubKey.DH as DH
 import qualified Crypto.PubKey.ECC.DH as ECDH
 import qualified Crypto.PubKey.ECC.Types as ECC
 import qualified Crypto.PubKey.ECC.Prim as ECC
+import qualified Crypto.PubKey.ECC.ECDSA as ECDSA
+import qualified Crypto.PubKey.Ed25519 as Ed25519
+import qualified Crypto.PubKey.RSA as RSA
+import qualified Crypto.PubKey.RSA.PKCS15 as RSA
 import qualified Crypto.Hash.Algorithms as Hash
 import qualified Crypto.Hash as Hash
 import           Data.ByteArray (convert)
@@ -27,6 +31,13 @@ data CipherKeys = CipherKeys
   { ckInitialIV :: L.ByteString
   , ckEncKey    :: L.ByteString
   }
+
+data PrivateKey
+  = PrivateEd25519 Ed25519.SecretKey Ed25519.PublicKey
+  | PrivateRsa     RSA.PrivateKey
+  | PrivateEcdsa256 ECDSA.PrivateKey
+  | PrivateEcdsa384 ECDSA.PrivateKey
+  | PrivateEcdsa521 ECDSA.PrivateKey
 
 nullKeys :: CipherKeys
 nullKeys = CipherKeys "" ""
@@ -258,3 +269,23 @@ runCurve25519dh raw_pub_c =
                     $ C25519.dh pub_c priv
 
      return (raw_pub_s, raw_secret)
+
+sign :: PrivateKey -> SshSessionId -> IO SshSig
+sign pk (SshSessionId token) =
+  case pk of
+
+    PrivateRsa priv ->
+      do result <- RSA.signSafer (Just Hash.SHA1) priv token
+         case result of
+           Right x -> return (SshSigRsa x)
+           Left e -> fail (show e)
+
+    PrivateEd25519 priv pub ->
+      return (SshSigEd25519 (convert (Ed25519.sign priv pub token)))
+
+    PrivateEcdsa256 _ -> fail "ecc signing not implemented"
+      -- SshSigEcDsaP256 <$> ECDSA.sign priv Hash.SHA256 token
+    PrivateEcdsa384 _ -> fail "ecc signing not implemented"
+      -- SshSigEcDsaP384 <$> ECDSA.sign priv Hash.SHA384 token
+    PrivateEcdsa521 _ -> fail "ecc signing not implemented"
+      -- SshSigEcDsaP521 <$> ECDSA.sign priv Hash.SHA512 token

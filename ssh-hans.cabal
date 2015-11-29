@@ -25,6 +25,7 @@ library
                        Network.SSH.Packet
                        Network.SSH.UserAuth
                        Network.SSH.TerminalModes
+                       Network.SSH.PrivateKeyFormat
                        Network.SSH.Named
 
   build-depends:       base         >=4.7      && <4.9,

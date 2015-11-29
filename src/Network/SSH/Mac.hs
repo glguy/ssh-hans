@@ -4,7 +4,7 @@
 module Network.SSH.Mac (
     Mac()
   , mETM
-  , sign
+  , computeMac
 
   , allMac
 
@@ -64,8 +64,8 @@ allMac =
   ]
 
 -- | Sign a packet, yielding out a signature, and the new Mac to use.
-sign :: Word32 -> Mac -> [S.ByteString] -> S.ByteString
-sign seqNum Mac { .. } bytes = sig
+computeMac :: Word32 -> Mac -> [S.ByteString] -> S.ByteString
+computeMac seqNum Mac { .. } bytes = sig
   where
   sig = mFunction (runPut (putWord32be seqNum) : bytes)
 
