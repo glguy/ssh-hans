@@ -35,7 +35,6 @@ module Network.SSH.Ciphers (
 
 import           Data.ByteString.Short (ShortByteString)
 import qualified Data.ByteString as S
-import qualified Data.ByteString.Char8 as S8
 import qualified Data.ByteString.Lazy as L
 
 import           Crypto.Error

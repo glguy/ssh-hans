@@ -13,17 +13,17 @@ import           Data.Serialize ( runGet, runPut )
 import           Crypto.Random
 import           Crypto.Error
 import           Crypto.Number.Basic (numBytes)
+import qualified Crypto.Hash as Hash
 import qualified Crypto.PubKey.Curve25519 as C25519
 import qualified Crypto.PubKey.DH as DH
+import qualified Crypto.PubKey.DSA as DSA
 import qualified Crypto.PubKey.ECC.DH as ECDH
-import qualified Crypto.PubKey.ECC.Types as ECC
-import qualified Crypto.PubKey.ECC.Prim as ECC
 import qualified Crypto.PubKey.ECC.ECDSA as ECDSA
+import qualified Crypto.PubKey.ECC.Prim as ECC
+import qualified Crypto.PubKey.ECC.Types as ECC
 import qualified Crypto.PubKey.Ed25519 as Ed25519
 import qualified Crypto.PubKey.RSA as RSA
 import qualified Crypto.PubKey.RSA.PKCS15 as RSA
-import qualified Crypto.Hash.Algorithms as Hash
-import qualified Crypto.Hash as Hash
 import           Data.ByteArray (convert)
 
 
@@ -35,6 +35,7 @@ data CipherKeys = CipherKeys
 data PrivateKey
   = PrivateEd25519 Ed25519.SecretKey Ed25519.PublicKey
   | PrivateRsa     RSA.PrivateKey
+  | PrivateDsa     DSA.PrivateKey
   | PrivateEcdsa256 ECDSA.PrivateKey
   | PrivateEcdsa384 ECDSA.PrivateKey
   | PrivateEcdsa521 ECDSA.PrivateKey
@@ -279,6 +280,10 @@ sign pk (SshSessionId token) =
          case result of
            Right x -> return (SshSigRsa x)
            Left e -> fail (show e)
+
+    PrivateDsa priv ->
+      do sig <- DSA.sign priv Hash.SHA1 token
+         return (SshSigDss (DSA.sign_r sig) (DSA.sign_s sig))
 
     PrivateEd25519 priv pub ->
       return (SshSigEd25519 (convert (Ed25519.sign priv pub token)))
