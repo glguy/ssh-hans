@@ -16,6 +16,7 @@ import qualified Crypto.PubKey.ECC.ECDSA as ECC
 import qualified Crypto.PubKey.ECC.Types as ECC
 import qualified Crypto.Hash.Algorithms as Hash
 import Crypto.Error
+import Crypto.Number.Basic (numBytes)
 
 
 verifyPubKeyAuthentication ::
@@ -31,7 +32,7 @@ verifyPubKeyAuthentication
     case (publicKeyAlgorithm, publicKey, signature) of
 
       ("ssh-rsa", SshPubRsa e n, SshSigRsa s) ->
-        RSA.verify (Just Hash.SHA1) (RSA.PublicKey (octetSize n) n e) token s
+        RSA.verify (Just Hash.SHA1) (RSA.PublicKey (numBytes n) n e) token s
 
       ("ssh-dss", SshPubDss p q g y, SshSigDss r s) ->
         let params = DSA.Params { DSA.params_p = p
@@ -71,15 +72,6 @@ verifyPubKeyAuthentication
        putBoolean    True
        putString     publicKeyAlgorithm
        putString     (runPut (putSshPubCert publicKey))
-
--- | The length of the modulus n in octets is the integer k satisfying
--- 2^(8(k-1)) <= n < 2^(8k)
-octetSize :: Integer -> Int
-octetSize = aux 0
-  where
-  aux acc n
-    | n <= 0 = acc
-    | otherwise = aux (acc+1) (n`quot`256)
 
 ecdsaAuth ::
   Hash.HashAlgorithm h =>

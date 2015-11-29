@@ -12,6 +12,7 @@ import           Data.Serialize ( runGet, runPut )
 
 import           Crypto.Random
 import           Crypto.Error
+import           Crypto.Number.Basic (numBytes)
 import qualified Crypto.PubKey.Curve25519 as C25519
 import qualified Crypto.PubKey.DH as DH
 import qualified Crypto.PubKey.ECC.DH as ECDH
@@ -216,7 +217,7 @@ bytesToInteger :: S.ByteString -> Integer
 bytesToInteger = S.foldl' (\acc x -> acc*256 + fromIntegral x) 0
 
 curveSizeBytes :: ECC.Curve -> Int
-curveSizeBytes curve = (ECC.curveSizeBits curve + 7) `div` 8
+curveSizeBytes = numBytes . ECC.ecc_n . ECC.common_curve
 
 ------------------------------------------------------------------------
 

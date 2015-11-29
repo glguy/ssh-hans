@@ -88,7 +88,7 @@ getMpInt  =
 getUnsigned :: Int -> Get Integer
 getUnsigned n = S.foldl' aux 0 <$> getBytes n
   where
-  aux acc n = acc`shiftL`8 + fromIntegral n
+  aux acc b = acc`shiftL`8 + fromIntegral b
 
 getNameList :: Get [ShortByteString]
 getNameList  =

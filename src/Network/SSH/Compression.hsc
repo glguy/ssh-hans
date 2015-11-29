@@ -1,7 +1,11 @@
-{-# LANGUAGE CApiFFI #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE OverloadedStrings #-}
-module Network.SSH.Compression where
+module Network.SSH.Compression
+  ( Compression(..)
+  , allCompression
+  , compression_none
+  , compression_zlib
+  ) where
 
 #include <zlib.h>
 
@@ -12,6 +16,7 @@ import           Control.Monad
 import           Control.Exception
 import           Foreign
 import           Foreign.C.Types
+import           Foreign.C.String
 
 import Network.SSH.Named
 
@@ -31,108 +36,98 @@ compression_zlib :: Named Compression
 compression_zlib = Named "zlib" (Compression mkZlibCompressor mkZlibDecompressor)
 
 ------------------------------------------------------------------------
+-- Local minimalistic binding to zlib
+------------------------------------------------------------------------
 
+-- | Type used to tag pointers to @z_stream@
 data ZStream
 
-zstreamSize :: Int
-zstreamSize = #{size z_stream}
+-- | Returns values from zlib
+newtype ZError = ZError CInt deriving (Eq, Show)
+instance Exception ZError
+#enum ZError, ZError, Z_OK, Z_BUF_ERROR
 
-zPartialFlush :: CInt
-zPartialFlush = #{const Z_PARTIAL_FLUSH}
+-- | Flush arguments instruct 'inflate' and 'deflate' on output behavior.
+newtype ZFlush = ZFlush CInt
+#enum ZFlush, ZFlush, Z_PARTIAL_FLUSH
 
-zCompressLevel :: CInt
-zCompressLevel = #{const Z_DEFAULT_COMPRESSION}
+-- | Allocate a new, uninitialized 'ZStream'
+newZStream :: IO (ForeignPtr ZStream)
+newZStream = mallocForeignPtrBytes #{size z_stream}
 
-setNextIn :: Ptr ZStream -> Ptr CChar -> IO ()
-setNextIn = #{poke z_stream, next_in}
+-- | Assign a buffer to be used as input
+setInput :: Ptr ZStream -> CStringLen -> IO ()
+setInput z (p,n) =
+  do #{poke z_stream, avail_in} z (fromIntegral n :: CUInt)
+     #{poke z_stream, next_in } z p
 
-setAvailIn :: Ptr ZStream -> CUInt -> IO ()
-setAvailIn = #{poke z_stream, avail_in}
+-- | Assign a buffer to be used as output
+setOutput :: Ptr ZStream -> CStringLen -> IO ()
+setOutput z (p,n) =
+  do #{poke z_stream, avail_out} z (fromIntegral n :: CUInt)
+     #{poke z_stream, next_out } z p
 
-setNextOut :: Ptr ZStream -> Ptr CChar -> IO ()
-setNextOut = #{poke z_stream, next_out}
-
-setAvailOut :: Ptr ZStream -> CUInt -> IO ()
-setAvailOut = #{poke z_stream, avail_out}
-
+-- | Get number of bytes available in the output buffer
 getAvailOut :: Ptr ZStream -> IO CUInt
 getAvailOut = #{peek z_stream, avail_out}
 
-setZAlloc :: Ptr ZStream -> FunPtr (Ptr a -> CUInt -> CUInt -> IO (Ptr b)) -> IO ()
-setZAlloc = #{poke z_stream, zalloc}
+foreign import ccall "ssh_hans_zlib_inflateInit" inflateInit :: Ptr ZStream -> IO ZError
+foreign import ccall "zlib.h inflate" inflate :: Ptr ZStream -> ZFlush -> IO ZError
+foreign import ccall "zlib.h &inflateEnd" inflateEndPtr :: FunPtr (Ptr ZStream -> IO ())
 
-setZFree :: Ptr ZStream -> FunPtr (Ptr a -> Ptr b -> IO ()) -> IO ()
-setZFree = #{poke z_stream, zfree}
-
-setOpaque :: Ptr ZStream -> Ptr a -> IO ()
-setOpaque = #{poke z_stream, opaque}
+foreign import ccall "ssh_hans_zlib_deflateInit" deflateInit :: Ptr ZStream -> IO ZError
+foreign import ccall "zlib.h deflate" deflate :: Ptr ZStream -> ZFlush -> IO ZError
+foreign import ccall "zlib.h &deflateEnd" deflateEndPtr :: FunPtr (Ptr ZStream -> IO ())
 
 ------------------------------------------------------------------------
 
--- inflateInit is a macro that calls inflateInit_
-foreign import capi "zlib.h inflateInit" inflateInit :: Ptr ZStream -> IO CInt
-foreign import ccall "zlib.h inflate" inflate :: Ptr ZStream -> CInt -> IO CInt
-foreign import ccall "zlib.h &inflateEnd" inflateEndPtr :: FunPtr (Ptr ZStream -> IO ())
-
-foreign import capi  "zlib.h deflateInit" deflateInit :: Ptr ZStream -> CInt -> IO CInt
-foreign import ccall "zlib.h deflate" deflate :: Ptr ZStream -> CInt -> IO CInt
-foreign import ccall "zlib.h &deflateEnd" deflateEndPtr :: FunPtr (Ptr ZStream -> IO ())
-
-newtype ZError = ZError CInt
-  deriving (Eq, Show)
-
-instance Exception ZError
 
 -- | Takes an action that returns a Zlib return value. If an error
 -- value is returned then that value is raised as a 'ZError' exception.
-throwZ :: IO CInt -> IO ()
+throwZ :: IO ZError -> IO ()
 throwZ m =
   do result <- m
-     unless (result == #{const Z_OK}) (throwIO (ZError result))
+     unless (result == zOk) (throwIO result)
 
+-- | Execute an initializing procedure on a ForeignPtr managed pointer.
+-- If initialization is successful a finalizer is added to the ForeignPtr.
+-- Asynchronous exceptions are masked during initialization.
+setupForeignPtr ::
+  (Ptr a -> IO ()) {- ^ initializer -} ->
+  FinalizerPtr a   {- ^ finalizer   -} ->
+  ForeignPtr a -> IO ()
+setupForeignPtr start finish fp =
+  mask_ $ do withForeignPtr fp start
+             addForeignPtrFinalizer finish fp
+
+-- | Contruct a new function suitable for decompressing a stream.
+-- Each decompression will update the zlib state.
 mkZlibDecompressor :: IO (S.ByteString -> IO L.ByteString)
 mkZlibDecompressor =
   do fz <- newZStream
-     -- ensure that if init suceeds that the finalizer is added
-     mask_ $ do withForeignPtr fz $ \z ->
-                  throwZ (inflateInit z)
-                addForeignPtrFinalizer inflateEndPtr fz
+     setupForeignPtr (throwZ . inflateInit) inflateEndPtr fz
      return (zlibDriver inflate fz)
 
+-- | Contruct a new function suitable for compressing a stream.
+-- Each compression will update the zlib state.
 mkZlibCompressor :: IO (S.ByteString -> IO L.ByteString)
 mkZlibCompressor =
   do fz <- newZStream
-     -- ensure that if init suceeds that the finalizer is added
-     mask_ $ do withForeignPtr fz $ \z ->
-                  throwZ (deflateInit z zCompressLevel)
-                addForeignPtrFinalizer deflateEndPtr fz
+     setupForeignPtr (throwZ . deflateInit) deflateEndPtr fz
      return (zlibDriver deflate fz)
-
--- | Allocate a new z_stream and prepare it as a valid argument
--- for deflateInit and inflateInit
-newZStream :: IO (ForeignPtr ZStream)
-newZStream =
-  do fz <- mallocForeignPtrBytes zstreamSize
-     withForeignPtr fz $ \z ->
-       do setNextIn  z nullPtr
-          setAvailIn z 0
-          setZAlloc  z nullFunPtr
-          setZFree   z nullFunPtr
-          setOpaque  z nullPtr
-     return fz
 
 -- | This adds the input bytes to the already initialized z_stream
 -- and then calls the provided 'inflate' or 'deflate' operation
 -- until all output is emitted.
 zlibDriver ::
-  (Ptr ZStream -> CInt -> IO CInt) {- 'inflate' or 'deflate' -} ->
+  (Ptr ZStream -> ZFlush -> IO ZError) {- 'inflate' or 'deflate' -} ->
   ForeignPtr ZStream {- ^ initialized z_stream -} ->
   S.ByteString       {- ^ input bytes -} ->
   IO L.ByteString    {- ^ output bytes -}
 zlibDriver flate fz input =
 
   -- safe: zlib doesn't modify the input buffer
-  U.unsafeUseAsCStringLen input $ \(inPtr, inLen) ->
+  U.unsafeUseAsCStringLen input $ \inPtrLen ->
 
   withForeignPtr fz $ \z ->
 
@@ -140,21 +135,21 @@ zlibDriver flate fz input =
   let bufSize = 32752 in
   allocaBytes bufSize $ \buf ->
 
-  do setNextIn z inPtr
-     setAvailIn z (fromIntegral inLen)
+  do setInput z inPtrLen
 
-     let loop acc =
-           do setNextOut z buf
-              setAvailOut z (fromIntegral bufSize)
+     let loop chunks =
+           do setOutput z (buf, fromIntegral bufSize)
 
-              throwZ (flate z zPartialFlush)
+              result <- flate z zPartialFlush
+              unless (result == zOk || result == zBufError) (throwIO result)
+              -- Z_BUF_ERROR is not fatal and can happen if there is no new output
 
-              out' <- getAvailOut z
+              out'  <- getAvailOut z
               chunk <- S.packCStringLen (buf, bufSize - fromIntegral out')
 
-              let acc' = chunk : acc
+              let chunks' = chunk : chunks
               if out' == 0 -- whole output buffer used
-                 then loop acc'
-                 else return (L.fromChunks (reverse acc'))
+                 then loop chunks'
+                 else return (L.fromChunks (reverse chunks'))
 
      loop []
