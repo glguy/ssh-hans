@@ -15,7 +15,6 @@ import qualified Data.ByteString as S
 import qualified Data.ByteString.Lazy as L
 import           Data.Char ( chr )
 import           Data.Word
-import           Data.Monoid ((<>))
 import           Data.Serialize
                      ( Get, runGet, runPut, label, remaining
                      , lookAhead, skip, getBytes, getWord8, putWord8
@@ -59,7 +58,7 @@ putSshPacket seqNum Cipher{..} mac gen bytes
   packet = L.fromChunks [ lenBytes, encBody, sig ]
 
   (st',encBody) = encrypt seqNum cipherState body
-  sig           = sign seqNum mac (lenBytes <> encBody)
+  sig           = sign seqNum mac [lenBytes, encBody]
 
   lenBytes = runPut (putWord32be (fromIntegral payloadLen))
 
@@ -81,7 +80,7 @@ putSshPacket seqNum Cipher{..} mac gen bytes = (packet,Cipher{cipherState=st',..
   packet = L.fromChunks [ encBody, sig ]
 
   (st',encBody) = encrypt seqNum cipherState body
-  sig           = sign seqNum mac body
+  sig           = sign seqNum mac [body]
 
   body = runPut $
     do putWord32be (fromIntegral packetLen)
@@ -139,7 +138,7 @@ getSshPacket seqNum Cipher{..} mac
   | mETM mac = label "SshPacket" $
   do packetLen <- getWord32be
      payload   <- getBytes (fromIntegral packetLen)
-     let computedSig = sign seqNum mac (runPut (putWord32be packetLen >> putByteString payload))
+     let computedSig = sign seqNum mac [runPut (putWord32be packetLen), payload]
      sig <- getBytes (S.length computedSig)
      unless (sig == computedSig) (fail "signature validation failed")
 
@@ -186,5 +185,5 @@ getSshPacket seqNum Cipher{..} mac = label "SshPacket" $
 
   genSig =
     do payload <- getBytes =<< remaining
-       return (sign seqNum mac payload)
+       return (sign seqNum mac [payload])
 

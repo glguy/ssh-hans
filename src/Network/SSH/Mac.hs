@@ -29,7 +29,7 @@ module Network.SSH.Mac (
 import           Data.ByteString.Short (ShortByteString)
 import qualified Data.ByteString.Char8 as S
 import qualified Data.ByteString.Lazy as L
-import           Data.Serialize ( runPut, putWord32be, putByteString )
+import           Data.Serialize ( runPut, putWord32be )
 import           Data.Word ( Word32 )
 
 import qualified Crypto.MAC.HMAC as HMAC
@@ -39,7 +39,7 @@ import           Data.ByteArray (convert)
 import Network.SSH.Named
 
 data Mac = Mac
-  { mFunction   :: S.ByteString -> S.ByteString
+  { mFunction   :: [S.ByteString] -> S.ByteString
   , mETM        :: Bool
   }
 
@@ -64,10 +64,10 @@ allMac =
   ]
 
 -- | Sign a packet, yielding out a signature, and the new Mac to use.
-sign :: Word32 -> Mac -> S.ByteString -> S.ByteString
+sign :: Word32 -> Mac -> [S.ByteString] -> S.ByteString
 sign seqNum Mac { .. } bytes = sig
   where
-  sig = mFunction (runPut (putWord32be seqNum >> putByteString bytes))
+  sig = mFunction (runPut (putWord32be seqNum) : bytes)
 
 
 -- Algorithms ------------------------------------------------------------------
@@ -100,9 +100,11 @@ hmac' ::
   Hash.HashAlgorithm a =>
   a ->
   S.ByteString {- ^ key     -} ->
-  S.ByteString {- ^ message -} ->
+  [S.ByteString] {- ^ message chunks -} ->
   HMAC.HMAC a
-hmac' _ = HMAC.hmac
+hmac' _ key
+  = HMAC.finalize
+  . HMAC.updates (HMAC.initialize key)
 
 mac_hmac_md5 :: Named (L.ByteString -> Mac)
 mac_hmac_md5 = mk_mac_hmac Hash.MD5 "hmac-md5" False
