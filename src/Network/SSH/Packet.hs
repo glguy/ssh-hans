@@ -92,7 +92,9 @@ putSshPacket seqNum Cipher{..} mac gen bytes = (packet,Cipher{cipherState=st',..
   bytesLen = fromIntegral (L.length bytes)
   paddingLen = paddingSize (4+bytesLen)
   packetLen = 1 + bytesLen + paddingLen
-  (padding, gen') = randomBytesGenerate paddingLen gen
+  (padding, gen')
+    | randomizePadding = randomBytesGenerate paddingLen gen
+    | otherwise        = (S.replicate paddingLen 0, gen)
 
 -- Parsing ---------------------------------------------------------------------
 
