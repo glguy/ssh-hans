@@ -7,7 +7,7 @@ import           Network.SSH.Messages
 import           Network.SSH.Packet ( SshIdent(..) )
 import           Network.SSH.Server
 import           Network.SSH.Named
-import           Network.SSH.UserAuth
+import           Network.SSH.PubKey
 import           Network.SSH.PrivateKeyFormat
 
 import           Control.Monad ( forever, (<=<) )

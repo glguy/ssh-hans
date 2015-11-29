@@ -1,28 +1,25 @@
 {-# LANGUAGE OverloadedStrings #-}
 
+-- | Key exchange and key generation
 module Network.SSH.Keys where
 
 import           Network.SSH.Protocol ( getString, getMpInt, putMpInt, putString )
 import           Network.SSH.Named
 import           Network.SSH.Messages
+import           Network.SSH.PubKey
 
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Lazy as L
 import           Data.Serialize ( runGet, runPut )
 
+import           Crypto.Number.Serialize
 import           Crypto.Random
 import           Crypto.Error
-import           Crypto.Number.Basic (numBytes)
 import qualified Crypto.Hash as Hash
 import qualified Crypto.PubKey.Curve25519 as C25519
 import qualified Crypto.PubKey.DH as DH
-import qualified Crypto.PubKey.DSA as DSA
 import qualified Crypto.PubKey.ECC.DH as ECDH
-import qualified Crypto.PubKey.ECC.ECDSA as ECDSA
-import qualified Crypto.PubKey.ECC.Prim as ECC
 import qualified Crypto.PubKey.ECC.Types as ECC
-import qualified Crypto.PubKey.Ed25519 as Ed25519
-import qualified Crypto.PubKey.RSA as RSA
 import qualified Crypto.PubKey.RSA.PKCS15 as RSA
 import           Data.ByteArray (convert)
 
@@ -31,14 +28,6 @@ data CipherKeys = CipherKeys
   { ckInitialIV :: L.ByteString
   , ckEncKey    :: L.ByteString
   }
-
-data PrivateKey
-  = PrivateEd25519 Ed25519.SecretKey Ed25519.PublicKey
-  | PrivateRsa     RSA.PrivateKey
-  | PrivateDsa     DSA.PrivateKey
-  | PrivateEcdsa256 ECDSA.PrivateKey
-  | PrivateEcdsa384 ECDSA.PrivateKey
-  | PrivateEcdsa521 ECDSA.PrivateKey
 
 nullKeys :: CipherKeys
 nullKeys = CipherKeys "" ""
@@ -185,52 +174,6 @@ runEcdh curve raw_pub_c =
 
      return (raw_pub_s, raw_shared)
 
-pointFromBytes :: ECC.Curve -> S.ByteString -> CryptoFailable ECC.Point
-pointFromBytes curve bs =
-  case S.uncons bs of
-    Just (4{-no compression-}, bs1)
-     | let n = curveSizeBytes curve
-     , 2 * n == S.length bs1 ->
-
-        case S.splitAt n bs1 of
-          (xbytes, ybytes) ->
-             let p = ECC.Point (bytesToInteger xbytes)
-                               (bytesToInteger ybytes)
-             in if ECC.isPointValid curve p
-                 then CryptoPassed p
-                 else CryptoFailed CryptoError_PublicKeySizeInvalid
-
-    _ -> CryptoFailed CryptoError_PublicKeySizeInvalid
-
-pointToBytes :: ECC.Curve -> ECC.Point -> S.ByteString
-pointToBytes _ ECC.PointO = S.singleton 0
-pointToBytes curve (ECC.Point x y) =
-  S.concat ["\4" , integerToBytes n x, integerToBytes n y]
-  where
-  n = curveSizeBytes curve
-
--- | Encoding integer in big-endian byte representation. This function
--- fails if encoding size is too small to represent the number.
-integerToBytes ::
-  Int     {- ^ encoding size -} ->
-  Integer {- ^ data          -} ->
-  S.ByteString {- ^ big endian encoding of data -}
-integerToBytes n0 x0 = S.pack (aux [] n0 x0)
-  where
-  aux acc n x
-    | n <= 0 = if x /= 0 then error "integerToBytes: bytes too small!"
-                         else acc
-    | otherwise =
-         case quotRem x 256 of
-           (q,r) -> aux (fromIntegral r:acc) (n-1) q
-
--- | Convert big-endian bytes to Integer, again!
-bytesToInteger :: S.ByteString -> Integer
-bytesToInteger = S.foldl' (\acc x -> acc*256 + fromIntegral x) 0
-
-curveSizeBytes :: ECC.Curve -> Int
-curveSizeBytes = numBytes . ECC.ecc_n . ECC.common_curve
-
 ------------------------------------------------------------------------
 
 curve25519sha256 :: Named Kex
@@ -266,36 +209,7 @@ runCurve25519dh raw_pub_c =
                     $ C25519.toPublic priv
 
          -- Section 4.3: Treat shared key bytes as "integer"
-         raw_secret = runPut $ putMpInt $ bytesToInteger $ convert
+         raw_secret = runPut $ putMpInt $ os2ip
                     $ C25519.dh pub_c priv
 
      return (raw_pub_s, raw_secret)
-
-sign :: PrivateKey -> SshSessionId -> IO SshSig
-sign pk (SshSessionId token) =
-  case pk of
-
-    PrivateRsa priv ->
-      do result <- RSA.signSafer (Just Hash.SHA1) priv token
-         case result of
-           Right x -> return (SshSigRsa x)
-           Left e -> fail (show e)
-
-    PrivateDsa priv ->
-      do sig <- DSA.sign priv Hash.SHA1 token
-         return (SshSigDss (DSA.sign_r sig) (DSA.sign_s sig))
-
-    PrivateEd25519 priv pub ->
-      return (SshSigEd25519 (convert (Ed25519.sign priv pub token)))
-
-    PrivateEcdsa256 priv ->
-      SshSigEcDsaP256 . encodeEcdsaSig <$> ECDSA.sign priv Hash.SHA256 token
-    PrivateEcdsa384 priv ->
-      SshSigEcDsaP384 . encodeEcdsaSig <$> ECDSA.sign priv Hash.SHA384 token
-    PrivateEcdsa521 priv ->
-      SshSigEcDsaP521 . encodeEcdsaSig <$> ECDSA.sign priv Hash.SHA512 token
-
-encodeEcdsaSig :: ECDSA.Signature -> S.ByteString
-encodeEcdsaSig sig = runPut $
-  do putMpInt (ECDSA.sign_r sig)
-     putMpInt (ECDSA.sign_s sig)

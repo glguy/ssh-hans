@@ -11,7 +11,7 @@ import Data.Serialize
 import Data.ByteArray.Encoding
 import Data.Word
 import Data.Foldable (traverse_)
-import Network.SSH.Keys
+import Network.SSH.PubKey
 import Network.SSH.Protocol
 import Network.SSH.Messages
 import qualified Crypto.PubKey.ECC.Types as ECC

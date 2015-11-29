@@ -21,6 +21,7 @@ import           Network.SSH.Mac
 import           Network.SSH.Messages
 import           Network.SSH.Named
 import           Network.SSH.Packet
+import           Network.SSH.PubKey
 import           Network.SSH.State
 
 import           Control.Concurrent

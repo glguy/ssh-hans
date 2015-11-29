@@ -16,6 +16,7 @@ library
   exposed-modules:     Network.SSH.Server
                        Network.SSH.State
                        Network.SSH.Keys
+                       Network.SSH.PubKey
                        Network.SSH.Ciphers
                        Network.SSH.Connection
                        Network.SSH.Compression
@@ -23,7 +24,6 @@ library
                        Network.SSH.Messages
                        Network.SSH.Protocol
                        Network.SSH.Packet
-                       Network.SSH.UserAuth
                        Network.SSH.TerminalModes
                        Network.SSH.PrivateKeyFormat
                        Network.SSH.Named
