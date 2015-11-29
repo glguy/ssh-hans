@@ -283,9 +283,14 @@ sign pk (SshSessionId token) =
     PrivateEd25519 priv pub ->
       return (SshSigEd25519 (convert (Ed25519.sign priv pub token)))
 
-    PrivateEcdsa256 _ -> fail "ecc signing not implemented"
-      -- SshSigEcDsaP256 <$> ECDSA.sign priv Hash.SHA256 token
-    PrivateEcdsa384 _ -> fail "ecc signing not implemented"
-      -- SshSigEcDsaP384 <$> ECDSA.sign priv Hash.SHA384 token
-    PrivateEcdsa521 _ -> fail "ecc signing not implemented"
-      -- SshSigEcDsaP521 <$> ECDSA.sign priv Hash.SHA512 token
+    PrivateEcdsa256 priv ->
+      SshSigEcDsaP256 . encodeEcdsaSig <$> ECDSA.sign priv Hash.SHA256 token
+    PrivateEcdsa384 priv ->
+      SshSigEcDsaP384 . encodeEcdsaSig <$> ECDSA.sign priv Hash.SHA384 token
+    PrivateEcdsa521 priv ->
+      SshSigEcDsaP521 . encodeEcdsaSig <$> ECDSA.sign priv Hash.SHA512 token
+
+encodeEcdsaSig :: ECDSA.Signature -> S.ByteString
+encodeEcdsaSig sig = runPut $
+  do putMpInt (ECDSA.sign_r sig)
+     putMpInt (ECDSA.sign_s sig)

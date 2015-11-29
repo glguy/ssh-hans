@@ -65,38 +65,56 @@ getPrivateKeyList n =
 
 getPrivateKey :: Get (SshPubCert, PrivateKey, S.ByteString)
 getPrivateKey =
-  do pub  <- getSshPubCert
-     priv <- case pub of
-       SshPubRsa n e ->
-         do let private_pub = RSA.PublicKey
-                                { RSA.public_size = numBytes n
-                                , RSA.public_e    = e
-                                , RSA.public_n    = n }
-            private_d <- getMpInt
-            private_qinv <- getMpInt
-            private_p <- getMpInt
-            private_q <- getMpInt
-            let private_dP = private_d `mod` (private_p-1)
-                private_dQ = private_d `mod` (private_q-1)
-            return (PrivateRsa RSA.PrivateKey{..})
-       SshPubEd25519 {} ->
-         do xs <- getString
-            let (a,b) = S.splitAt 32 xs
-            case liftA2 (,) (Ed25519.secretKey a) (Ed25519.publicKey b) of
-              CryptoPassed (c,d) -> return (PrivateEd25519 c d)
-              _                -> fail "bad ed25519 key"
-       SshPubEcDsaP256{} ->
-         PrivateEcdsa256 . ECDSA.PrivateKey (ECC.getCurveByName ECC.SEC_p256r1) <$> getMpInt
-       SshPubEcDsaP384{} ->
-         PrivateEcdsa384 . ECDSA.PrivateKey (ECC.getCurveByName ECC.SEC_p384r1) <$> getMpInt
-       SshPubEcDsaP521{} ->
-         PrivateEcdsa521 . ECDSA.PrivateKey (ECC.getCurveByName ECC.SEC_p521r1) <$> getMpInt
+  do ty <- getString
+     (pub,priv) <- case ty of
+       "ssh-rsa" ->
+         do public_n       <- getMpInt
+            public_e       <- getMpInt
+            private_d      <- getMpInt
+            private_qinv   <- getMpInt
+            private_p      <- getMpInt
+            private_q      <- getMpInt
+            let private_dP  = private_d `mod` (private_p-1)
+                private_dQ  = private_d `mod` (private_q-1)
+                public_size = numBytes public_n
+                private_pub = RSA.PublicKey{..}
+            return (SshPubRsa public_e public_n, PrivateRsa RSA.PrivateKey{..})
+
+       "ssh-ed25519" ->
+         do pub1 <- getString
+            priv <- getString
+            let (sec,pub2) = S.splitAt 32 priv
+            guard (pub1 == pub2)
+            case liftA2 (,) (Ed25519.secretKey sec) (Ed25519.publicKey pub1) of
+              CryptoPassed (c,d) -> return (SshPubEd25519 pub1, PrivateEd25519 c d)
+              _                  -> fail "bad ed25519 key"
+
+       "ecdsa-sha2-nistp256" ->
+         do (pub, priv) <- getEccPubPriv "nistp256" (ECC.getCurveByName ECC.SEC_p256r1)
+            return (SshPubEcDsaP256 pub, PrivateEcdsa256 priv)
+       "ecdsa-sha2-nistp384" ->
+         do (pub, priv) <- getEccPubPriv "nistp384" (ECC.getCurveByName ECC.SEC_p384r1)
+            return (SshPubEcDsaP384 pub, PrivateEcdsa384 priv)
+       "ecdsa-sha2-nistp521" ->
+         do (pub, priv) <- getEccPubPriv "nistp521" (ECC.getCurveByName ECC.SEC_p521r1)
+            return (SshPubEcDsaP521 pub, PrivateEcdsa521 priv)
+
        _ -> fail "Unknown key type"
+
      comment <- getString
-     let pub' = case pub of -- XXX is this right?
-                  SshPubRsa n e -> SshPubRsa e n
-                  _ -> pub
-     return (pub', priv, comment)
+
+     return (pub, priv, comment)
+
+getEccPubPriv :: S.ByteString -> ECC.Curve -> Get (S.ByteString, ECDSA.PrivateKey)
+getEccPubPriv name curve =
+  do name1      <- getString
+     guard (name == name1)
+     pubBytes   <- getString
+     priv       <- getMpInt
+     case pointFromBytes curve pubBytes of
+       CryptoFailed e -> fail (show e)
+       CryptoPassed _ -> return ()
+     return (pubBytes, ECDSA.PrivateKey curve priv)
 
 removePadding :: S.ByteString -> Either String S.ByteString
 removePadding xs
@@ -129,7 +147,3 @@ extractPK pkf =
   go privBytes =
     privateKeys <$>
     runGet (getPrivateKeyList (length (pkfPublicKeys pkf))) privBytes
-
-demo fp = do
-  Right pkf <- parsePrivateKeyFile <$> S.readFile fp
-  print pkf
