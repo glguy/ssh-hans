@@ -93,6 +93,8 @@ mkClient creds (h,_,_) = Client { .. }
   cPut   = S.hPutStr  h . L.toStrict
   cClose =   hClose   h
 
+  cDirectTcp _host _port _events _writeback = return False
+
   cOpenShell term winsize termflags eventChannel writeBytes =
     do (masterFd, slaveFd) <-
          openpty

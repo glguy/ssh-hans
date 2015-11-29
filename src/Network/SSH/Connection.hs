@@ -12,7 +12,6 @@ import Control.Concurrent.STM
 import Control.Monad
 import Control.Applicative
 
-import Data.Maybe (fromJust)
 import Data.Word
 import qualified Data.Map as Map
 import           Data.Map ( Map )
@@ -71,11 +70,15 @@ startConnectionService client state
 connectionService :: Connection ()
 connectionService =
   do msg <- connectionReceive
-     liftIO (print msg)
      case msg of
        SshMsgChannelOpen SshChannelTypeSession
          senderChannel initialWindowSize maximumPacketSize ->
            do startSession senderChannel initialWindowSize maximumPacketSize
+              connectionService
+
+       SshMsgChannelOpen (SshChannelTypeDirectTcpIp host port _h _p)
+         senderChannel initialWindowSize maximumPacketSize ->
+           do startDirectTcp senderChannel initialWindowSize maximumPacketSize host port
               connectionService
 
        SshMsgChannelOpen _ senderChannel _ _ ->
@@ -95,6 +98,10 @@ connectionService =
          do channelClose chan
             connectionService
 
+       SshMsgChannelEof chan ->
+         do channelEof chan
+            connectionService
+
        SshMsgChannelWindowAdjust chan adj ->
          do windowAdjust chan adj
             connectionService
@@ -103,7 +110,9 @@ connectionService =
             liftIO (putStrLn ("Disconnect: " ++ show reason))
             -- TODO: tear down channels
 
-       _ -> return ()
+       _ ->
+         do liftIO (putStrLn ("Unhandled message: " ++ show msg))
+            connectionService
 
 
 startSession :: Word32 -> Word32 -> Word32 -> Connection ()
@@ -136,6 +145,43 @@ startSession senderChannel initialWindowSize maximumPacketSize =
          initialWindowSize
          maximumPacketSize
 
+startDirectTcp :: Word32 -> Word32 -> Word32 -> S.ByteString -> Word32 -> Connection ()
+startDirectTcp senderChannel initialWindowSize maximumPacketSize host port =
+  do channels <- connectionGetChannels
+
+     events <- liftIO newChan
+     window <- liftIO (atomically (newTVar initialWindowSize))
+
+     let nextChannelId =
+           case Map.maxViewWithKey channels of
+             Nothing        -> 0
+             Just ((k,_),_) -> k+1
+
+         channel = SshChannel
+                     { sshChannelRemote        = senderChannel
+                     , sshChannelWindowSize    = window
+                     , sshChannelMaximumPacket = maximumPacketSize
+                     , sshChannelEnv           = []
+                     , sshChannelPty           = Nothing
+                     , sshChannelEvents        = events
+                     }
+
+     connectionSetChannels (Map.insert nextChannelId channel channels)
+
+     (client,state) <- Connection ask
+     success <- liftIO (cDirectTcp client host port events
+                          (channelWrite client state nextChannelId channel))
+
+     connectionSend $
+        if success
+          then SshMsgChannelOpenConfirmation
+                 senderChannel
+                 nextChannelId
+                 initialWindowSize
+                 maximumPacketSize
+          else SshMsgChannelOpenFailure
+                 senderChannel SshOpenAdministrativelyProhibited "" ""
+
 windowAdjust :: Word32 -> Word32 -> Connection ()
 windowAdjust channelId adj =
   do channels <- connectionGetChannels
@@ -143,6 +189,14 @@ windowAdjust channelId adj =
        Nothing -> fail "Bad channel!"
        Just channel ->
          liftIO (atomically (modifyTVar' (sshChannelWindowSize channel) (+ adj)))
+
+channelEof :: Word32 -> Connection ()
+channelEof channelId =
+  do channels <- connectionGetChannels
+     case Map.lookup channelId channels of
+       Nothing -> fail "Bad channel!"
+       Just channel ->
+            liftIO (writeChan (sshChannelEvents channel) SessionClose)
 
 channelClose :: Word32 -> Connection ()
 channelClose channelId =

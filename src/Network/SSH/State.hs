@@ -52,6 +52,11 @@ data Client = Client
                     (Maybe S.ByteString -> IO ()) ->
                     IO ()
 
+  , cDirectTcp   :: S.ByteString -> Word32 ->
+                    Chan SessionEvent ->
+                    (Maybe S.ByteString -> IO ()) ->
+                    IO Bool
+
   -- | ByteString argument is user name
   , cAuthHandler :: SshSessionId  ->
                     S.ByteString  ->
