@@ -23,6 +23,7 @@ library
                        Network.SSH.Messages
                        Network.SSH.Protocol
                        Network.SSH.Packet
+                       Network.SSH.Rekey
                        Network.SSH.TerminalModes
                        Network.SSH.PrivateKeyFormat
                        Network.SSH.Named

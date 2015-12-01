@@ -6,6 +6,7 @@ module Network.SSH.Connection where
 import Network.SSH.Messages
 import Network.SSH.State
 import Network.SSH.TerminalModes
+import Network.SSH.Rekey
 
 import Control.Concurrent
 import Control.Concurrent.STM
@@ -71,6 +72,11 @@ connectionService :: Connection ()
 connectionService =
   do msg <- connectionReceive
      case msg of
+       SshMsgKexInit i_c ->
+         do (client,state) <- Connection ask
+            liftIO (rekeyKeyExchange client state i_c)
+            connectionService
+
        SshMsgChannelOpen SshChannelTypeSession
          senderChannel initialWindowSize maximumPacketSize ->
            do startSession senderChannel initialWindowSize maximumPacketSize

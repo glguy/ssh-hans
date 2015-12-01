@@ -11,6 +11,7 @@ import           Network.SSH.Mac
 import           Network.SSH.Messages
 import           Network.SSH.Named
 import           Network.SSH.Packet
+import           Network.SSH.PubKey (PrivateKey)
 import           Network.SSH.TerminalModes
 
 import           Data.IORef
@@ -72,12 +73,16 @@ data SshState = SshState
   { sshRecvState :: !(IORef (Word32, Cipher, Mac, CompressFun)) -- ^ Client context
   , sshBuf       :: !(IORef S.ByteString)
   , sshSendState :: !(MVar (Word32, Cipher, Mac, CompressFun, ChaChaDRG)) -- ^ Server encryption context
-  , sshCookie    :: SshCookie
+  , sshSessionId :: !(IORef (Maybe SshSessionId))
+  , sshAuthMethods :: [ServerCredential]
+  , sshIdents :: !(IORef (SshIdent, SshIdent)) -- server, client
   }
 
+type ServerCredential = Named (SshPubCert, PrivateKey)
 
-initialState :: IO SshState
-initialState  =
+
+initialState :: [ServerCredential] -> IO SshState
+initialState creds =
   do drg          <- drgNew
      sshRecvState <- newIORef (0,namedThing cipher_none nullKeys
                                 ,namedThing mac_none ""
@@ -87,7 +92,9 @@ initialState  =
                                 ,return . L.fromStrict -- no compression
                                 ,drg)
      sshBuf       <- newIORef S.empty
-     sshCookie    <- newCookie
+     sshSessionId <- newIORef Nothing
+     sshIdents <- newIORef (error "idents uninitialized")
+     let sshAuthMethods = creds
      return SshState { .. }
 
 -- | Construct a new, random cookie
