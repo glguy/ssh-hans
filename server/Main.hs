@@ -73,6 +73,7 @@ mkClient creds (h,_,_) = Client { .. }
   cGet   = S.hGetSome h
   cPut   = S.hPutStr  h . L.toStrict
   cClose =   hClose   h
+  cLog   = putStrLn
 
   cDirectTcp _host _port _events _writeback = return False
 
@@ -132,7 +133,6 @@ mkClient creds (h,_,_) = Client { .. }
       _ -> return (AuthFailed ["password","publickey"])
 
   cAuthHandler _session_id user _svc m =
-    do print (user,m)
        return (AuthFailed ["password","publickey"])
 
 loadServerKeys :: FilePath -> IO [ServerCredential]

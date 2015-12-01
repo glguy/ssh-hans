@@ -50,6 +50,11 @@ connectionSend msg = Connection $
   do (client, state) <- ask
      liftIO (send client state msg)
 
+connectionLog :: String -> Connection ()
+connectionLog msg = Connection $
+  do (client, _) <- ask
+     liftIO (cLog client msg)
+
 connectionGetChannels :: Connection (Map Word32 SshChannel)
 connectionGetChannels = Connection (lift get)
 
@@ -113,11 +118,11 @@ connectionService =
             connectionService
 
        SshMsgDisconnect reason _desc _lang ->
-            liftIO (putStrLn ("Disconnect: " ++ show reason))
+            connectionLog ("Disconnect: " ++ show reason)
             -- TODO: tear down channels
 
        _ ->
-         do liftIO (putStrLn ("Unhandled message: " ++ show msg))
+         do connectionLog ("Unhandled message: " ++ show msg)
             connectionService
 
 
