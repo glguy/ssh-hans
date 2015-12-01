@@ -1,15 +1,14 @@
 name:                ssh-hans
 version:             0.1.0.0
--- synopsis:            
--- description:         
+synopsis:            Implementation of the SSH2.0 protocol
+description:         Implementation of the SSH2.0 protocol
 license:             BSD3
 license-file:        LICENSE
 author:              Trevor Elliott
 maintainer:          trevor@galois.com
--- copyright:           
+copyright:           2014-2015 Galois Inc, Trevor Elliott, Eric Mertens
 category:            Network
 build-type:          Simple
--- extra-source-files:  
 cabal-version:       >=1.10
 
 library
@@ -77,6 +76,7 @@ test-suite tests
                        test-framework,
                        test-framework-quickcheck2,
                        QuickCheck,
+                       cryptonite,
                        ssh-hans
 
   ghc-options:         -Wall

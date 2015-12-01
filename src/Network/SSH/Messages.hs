@@ -14,6 +14,34 @@ import           Data.Serialize
                      , remaining )
 import           Data.Word ( Word32 )
 
+{-
+ Transport layer protocol:
+
+      1 to 19    Transport layer generic (e.g., disconnect, ignore,
+                 debug, etc.)
+      20 to 29   Algorithm negotiation
+      30 to 49   Key exchange method specific (numbers can be reused
+                 for different authentication methods)
+
+   User authentication protocol:
+
+      50 to 59   User authentication generic
+      60 to 79   User authentication method specific (numbers can be
+                 reused for different authentication methods)
+
+   Connection protocol:
+
+      80 to 89   Connection protocol generic
+      90 to 127  Channel related messages
+
+   Reserved for client protocols:
+
+      128 to 191 Reserved
+
+   Local extensions:
+
+      192 to 255 Local extensions
+-}
 
 data SshMsgTag = SshMsgTagDisconnect
                | SshMsgTagIgnore

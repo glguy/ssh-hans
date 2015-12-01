@@ -20,7 +20,6 @@ import qualified Crypto.PubKey.Curve25519 as C25519
 import qualified Crypto.PubKey.DH as DH
 import qualified Crypto.PubKey.ECC.DH as ECDH
 import qualified Crypto.PubKey.ECC.Types as ECC
-import qualified Crypto.PubKey.RSA.PKCS15 as RSA
 import           Data.ByteArray (convert)
 
 
@@ -39,10 +38,13 @@ data Keys = Keys
   , k_s2c_integKey   :: L.ByteString
   }
 
-genKeys :: (S.ByteString -> S.ByteString)
-        -> S.ByteString -> SshSessionId
-        -> Keys
-genKeys hash k sid = Keys
+genKeys ::
+  (S.ByteString -> S.ByteString) {- ^ hash function -} ->
+  S.ByteString {- ^ shared secret       -} ->
+  SshSessionId {- ^ current session_id  -} ->
+  SshSessionId {- ^ original session_id -} ->
+  Keys
+genKeys hash k sid osid = Keys
   { k_c2s_cipherKeys = CipherKeys
       { ckInitialIV = mkKey "A"
       , ckEncKey    = mkKey "C"
@@ -55,16 +57,20 @@ genKeys hash k sid = Keys
   , k_s2c_integKey  = mkKey "F"
   }
   where
-  mkKey = genKey hash k sid
+  mkKey = genKey hash k sid osid
 
 
 -- | Generate an initial key stream.  Note, that the returned lazy bytestring is
 -- an infinite list of chunks, so just take as much as is necessary.
-genKey :: (S.ByteString -> S.ByteString)
-       -> S.ByteString -> SshSessionId
-       -> S.ByteString -> L.ByteString
-genKey hash k (SshSessionId h) = \ x ->
-  let k_1 = chunk (L.fromChunks [ x, h ])
+genKey ::
+  (S.ByteString -> S.ByteString) {- ^ hash function -} ->
+  S.ByteString {- ^ shared secret -} ->
+  SshSessionId {- ^ current session  id -} ->
+  SshSessionId {- ^ original session id -} ->
+  S.ByteString {- ^ key name (A-F)      -} ->
+  L.ByteString
+genKey hash k (SshSessionId h) (SshSessionId o) = \ x ->
+  let k_1 = chunk (L.fromChunks [ x, o ])
    in k_1 `L.append` chunks k_1
   where
 
