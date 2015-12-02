@@ -14,6 +14,7 @@ import           Network.SSH.Packet
 import           Network.SSH.PubKey (PrivateKey)
 import           Network.SSH.TerminalModes
 
+import           Data.Char (isControl)
 import           Data.IORef
 import           Data.Word
 import           Data.Serialize
@@ -46,6 +47,9 @@ data Client = Client
 
   -- | Close network socket
   , cClose       :: IO ()
+
+  -- | Log messages for events related to this client
+  , cLog         :: String -> IO ()
 
   -- | TERM, initial window dimensions, termios flags, incoming events, write callback
   , cOpenShell   :: S.ByteString -> SshWindowSize -> [(TerminalFlag, Word32)] ->
@@ -123,7 +127,9 @@ receive client SshState { .. } = loop
        writeIORef sshRecvState (seqNum1, cipher', mac, comp)
        case msg of
          SshMsgIgnore _                      -> loop
-         SshMsgDebug display m _ | display   -> S8.putStrLn m >> loop -- XXX drop controls
+         SshMsgDebug display m _ | display   -> do cLog client (filter (not . isControl)
+                                                                       (S8.unpack m))
+                                                   loop -- XXX drop controls
                                  | otherwise -> loop
          _                                   -> return msg
 
