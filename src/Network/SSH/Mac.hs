@@ -24,22 +24,26 @@ module Network.SSH.Mac (
   , mac_hmac_sha1_96_etm
   , mac_hmac_sha2_256_etm
   , mac_hmac_sha2_512_etm
+
+  , mac_umac_64
+  , mac_umac_64_etm
   ) where
 
 import           Data.ByteString.Short (ShortByteString)
 import qualified Data.ByteString.Char8 as S
 import qualified Data.ByteString.Lazy as L
-import           Data.Serialize ( runPut, putWord32be )
+import           Data.Serialize ( runPut, putWord32be, putWord64be )
 import           Data.Word ( Word32 )
 
 import qualified Crypto.MAC.HMAC as HMAC
 import qualified Crypto.Hash as Hash
+import qualified Crypto.Hash.UMAC as UMAC
 import           Data.ByteArray (convert)
 
 import Network.SSH.Named
 
 data Mac = Mac
-  { mFunction   :: [S.ByteString] -> S.ByteString
+  { computeMac  :: Word32 -> [S.ByteString] -> S.ByteString
   , mETM        :: Bool
   }
 
@@ -61,20 +65,16 @@ allMac =
   , mac_hmac_sha1_96_etm
   , mac_hmac_sha2_256_etm
   , mac_hmac_sha2_512_etm
+
+  , mac_umac_64
+  , mac_umac_64_etm
   ]
-
--- | Sign a packet, yielding out a signature, and the new Mac to use.
-computeMac :: Word32 -> Mac -> [S.ByteString] -> S.ByteString
-computeMac seqNum Mac { .. } bytes = sig
-  where
-  sig = mFunction (runPut (putWord32be seqNum) : bytes)
-
 
 -- Algorithms ------------------------------------------------------------------
 
 mac_none :: Named (L.ByteString -> Mac)
 mac_none  = Named "none" $ \_ ->
-  Mac { mFunction   = const S.empty
+  Mac { computeMac  = \_ _ -> S.empty
       , mETM        = False
       }
 
@@ -87,12 +87,14 @@ mk_mac_hmac ::
 mk_mac_hmac h name etm = Named name $ \keyStream ->
   let keySize = fromIntegral (Hash.hashDigestSize h)
       key = L.toStrict (L.take keySize keyStream) in
-  Mac { mFunction   = convert . hmac' h key
+  Mac { computeMac  = \seqNum bytes ->
+                        convert (hmac' h key (runPut (putWord32be seqNum) : bytes))
       , mETM        = etm
       }
 
 truncateMac :: Int -> Named (L.ByteString -> Mac) -> Named (L.ByteString -> Mac)
-truncateMac n = fmap $ fmap $ \mac -> mac { mFunction = S.take n . mFunction mac }
+truncateMac n = fmap $ fmap $ \mac -> mac
+  { computeMac = \a b -> S.take n (computeMac mac a b) }
 
 
 -- | A helper that calls 'HMAC.hmac' using an argument to select the hash
@@ -149,3 +151,20 @@ mac_hmac_sha2_256_etm = mk_mac_hmac Hash.SHA256 "hmac-sha2-256-etm@openssh.com" 
 
 mac_hmac_sha2_512_etm :: Named (L.ByteString -> Mac)
 mac_hmac_sha2_512_etm = mk_mac_hmac Hash.SHA512 "hmac-sha2-512-etm@openssh.com" True
+
+------------------------------------------------------------------------
+
+mk_umac :: ShortByteString -> Bool -> Named (L.ByteString -> Mac)
+mk_umac name etm = Named name $ \keyStream ->
+  let key = L.toStrict (L.take 16 keyStream) in
+  Mac { computeMac  = \seqNum input ->
+                        let nonce = runPut (putWord64be (fromIntegral seqNum))
+                        in UMAC.compute input key nonce
+      , mETM        = etm
+      }
+
+mac_umac_64 :: Named (L.ByteString -> Mac)
+mac_umac_64 = mk_umac "umac-64@openssh.com" False
+
+mac_umac_64_etm :: Named (L.ByteString -> Mac)
+mac_umac_64_etm = mk_umac "umac-64-etm@openssh.com" True

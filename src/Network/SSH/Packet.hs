@@ -58,7 +58,7 @@ putSshPacket seqNum Cipher{..} mac gen bytes
   packet = L.fromChunks [ lenBytes, encBody, sig ]
 
   (st',encBody) = encrypt seqNum cipherState body
-  sig           = computeMac seqNum mac [lenBytes, encBody]
+  sig           = computeMac mac seqNum [lenBytes, encBody]
 
   lenBytes = runPut (putWord32be (fromIntegral payloadLen))
 
@@ -80,7 +80,7 @@ putSshPacket seqNum Cipher{..} mac gen bytes = (packet,Cipher{cipherState=st',..
   packet = L.fromChunks [ encBody, sig ]
 
   (st',encBody) = encrypt seqNum cipherState body
-  sig           = computeMac seqNum mac [body]
+  sig           = computeMac mac seqNum [body]
 
   body = runPut $
     do putWord32be (fromIntegral packetLen)
@@ -138,7 +138,7 @@ getSshPacket seqNum Cipher{..} mac
   | mETM mac = label "SshPacket" $
   do packetLen <- getWord32be
      payload   <- getBytes (fromIntegral packetLen)
-     let computedSig = computeMac seqNum mac [runPut (putWord32be packetLen), payload]
+     let computedSig = computeMac mac seqNum [runPut (putWord32be packetLen), payload]
      sig <- getBytes (S.length computedSig)
      unless (sig == computedSig) (fail "signature validation failed")
 
@@ -185,5 +185,5 @@ getSshPacket seqNum Cipher{..} mac = label "SshPacket" $
 
   genSig =
     do payload <- getBytes =<< remaining
-       return (computeMac seqNum mac [payload])
+       return (computeMac mac seqNum [payload])
 
