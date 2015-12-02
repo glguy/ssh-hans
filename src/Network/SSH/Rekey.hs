@@ -20,19 +20,31 @@ import Data.ByteString.Short (ShortByteString)
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Lazy as L
 
+-- | Initial entry point into the rekeying logic. This version
+-- sends a proposal and waits for the response.
 initialKeyExchange :: Client -> SshState -> IO ()
 initialKeyExchange client state =
-  do i_s <- supportedKex (map nameOf (sshAuthMethods state)) `fmap` newCookie
-     send client state (SshMsgKexInit i_s)
+  do i_s <- sendProposal client state
      SshMsgKexInit i_c <- receive client state
      rekeyConnection client state i_s i_c
 
 
+-- | Subsequent entry point into the rekeying logic. This version
+-- is called when a proposal has already been received and only
+-- sends the response.
 rekeyKeyExchange :: Client -> SshState -> SshProposal -> IO ()
 rekeyKeyExchange client state i_c =
-  do i_s <- supportedKex (map nameOf (sshAuthMethods state)) `fmap` newCookie
-     send client state (SshMsgKexInit i_s)
+  do i_s <- sendProposal client state
      rekeyConnection client state i_s i_c
+
+
+sendProposal :: Client -> SshState -> IO SshProposal
+sendProposal client state =
+  do cookie <- newCookie
+     let authMethods = map nameOf (sshAuthMethods state)
+         i_s         = supportedKex authMethods cookie
+     send client state (SshMsgKexInit i_s)
+     return i_s
 
 
 rekeyConnection :: Client -> SshState -> SshProposal -> SshProposal -> IO ()
@@ -49,6 +61,8 @@ rekeyConnection client state i_s i_c =
      let sid = SshSessionId
              $ kexHash (suite_kex suite)
              $ sshDhHash v_c v_s i_c i_s (suite_host_pub suite) pub_c pub_s k
+
+     -- the session id doesn't change on rekeying
      modifyIORef' (sshSessionId state) (<|> Just sid)
 
      sig <- sign (suite_host_priv suite) sid
