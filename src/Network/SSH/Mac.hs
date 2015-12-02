@@ -27,6 +27,8 @@ module Network.SSH.Mac (
 
   , mac_umac_64
   , mac_umac_64_etm
+  , mac_umac_128
+  , mac_umac_128_etm
   ) where
 
 import           Data.ByteString.Short (ShortByteString)
@@ -68,6 +70,8 @@ allMac =
 
   , mac_umac_64
   , mac_umac_64_etm
+  , mac_umac_128
+  , mac_umac_128_etm
   ]
 
 -- Algorithms ------------------------------------------------------------------
@@ -154,17 +158,25 @@ mac_hmac_sha2_512_etm = mk_mac_hmac Hash.SHA512 "hmac-sha2-512-etm@openssh.com" 
 
 ------------------------------------------------------------------------
 
-mk_umac :: ShortByteString -> Bool -> Named (L.ByteString -> Mac)
-mk_umac name etm = Named name $ \keyStream ->
+mk_umac ::
+  ([S.ByteString] -> S.ByteString -> S.ByteString -> S.ByteString) ->
+  ShortByteString -> Bool -> Named (L.ByteString -> Mac)
+mk_umac f name etm = Named name $ \keyStream ->
   let key = L.toStrict (L.take 16 keyStream) in
   Mac { computeMac  = \seqNum input ->
                         let nonce = runPut (putWord64be (fromIntegral seqNum))
-                        in UMAC.compute input key nonce
+                        in f input key nonce
       , mETM        = etm
       }
 
 mac_umac_64 :: Named (L.ByteString -> Mac)
-mac_umac_64 = mk_umac "umac-64@openssh.com" False
+mac_umac_64 = mk_umac UMAC.compute64 "umac-64@openssh.com" False
 
 mac_umac_64_etm :: Named (L.ByteString -> Mac)
-mac_umac_64_etm = mk_umac "umac-64-etm@openssh.com" True
+mac_umac_64_etm = mk_umac UMAC.compute64 "umac-64-etm@openssh.com" True
+
+mac_umac_128 :: Named (L.ByteString -> Mac)
+mac_umac_128 = mk_umac UMAC.compute128 "umac-128@openssh.com" False
+
+mac_umac_128_etm :: Named (L.ByteString -> Mac)
+mac_umac_128_etm = mk_umac UMAC.compute128 "umac-128-etm@openssh.com" True

@@ -242,6 +242,7 @@ typedef UINT8          aes_int_key[AES_ROUNDS+1][4][4]; /* AES internal */
  * 'nbytes' bytes to the memory pointed at by 'buffer_ptr'. Each distinct
  * 'index' causes a distinct byte stream.
  */
+static
 void kdf(void *buffer_ptr, aes_int_key key, UINT8 index, int nbytes)
 {
     UINT8 in_buf[AES_BLOCK_LEN] = {0};
@@ -367,7 +368,7 @@ static void pdf_gen_xor(pdf_ctx *pc, UINT8 nonce[8], UINT8 buf[8])
 #define L1_KEY_LEN         1024     /* Internal key bytes                 */
 #define L1_KEY_SHIFT         16     /* Toeplitz key shift between streams */
 #define L1_PAD_BOUNDARY      32     /* pad message to boundary multiple   */
-#define ALLOC_BOUNDARY       16     /* Keep buffers aligned to this       */
+#define ALLOC_BOUNDARY       0      /* Keep buffers aligned to this       */
 #define HASH_BUF_BYTES       64     /* nh_aux_hb buffer multiple          */
 
 typedef struct {
@@ -1611,6 +1612,7 @@ static void ip_long(uhash_ctx_t ahc, char *res)
 /* ---------------------------------------------------------------------- */
 
 /* Reset uhash context for next hash session */
+static
 int uhash_reset(uhash_ctx_t pc)
 {
     nh_reset(&pc->hash);
@@ -1679,6 +1681,7 @@ static void uhash_init(uhash_ctx_t ahc, aes_int_key prf_key)
 
 /* ---------------------------------------------------------------------- */
 
+static
 uhash_ctx_t uhash_alloc(char key[])
 {
 /* Allocate memory and force to a 16-byte boundary. */
@@ -1702,6 +1705,7 @@ uhash_ctx_t uhash_alloc(char key[])
 
 /* ---------------------------------------------------------------------- */
 
+static
 int uhash_free(uhash_ctx_t ctx)
 {
 /* Free memory allocated by uhash_alloc */
@@ -1719,7 +1723,8 @@ int uhash_free(uhash_ctx_t ctx)
 
 /* ---------------------------------------------------------------------- */
 
-int uhash_update(uhash_ctx_t ctx, char *input, long len)
+static
+int uhash_update(uhash_ctx_t ctx, const char *input, long len)
 /* Given len bytes of data, we parse it into L1_KEY_LEN chunks and
  * hash each one with NH, calling the polyhash on each NH output.
  */
@@ -1774,6 +1779,7 @@ int uhash_update(uhash_ctx_t ctx, char *input, long len)
 
 /* ---------------------------------------------------------------------- */
 
+static
 int uhash_final(uhash_ctx_t ctx, char *res)
 /* Incorporate any pending data, pad, and generate tag */
 {
@@ -1795,7 +1801,8 @@ int uhash_final(uhash_ctx_t ctx, char *res)
 
 /* ---------------------------------------------------------------------- */
 
-int uhash(uhash_ctx_t ahc, char *msg, long len, char *res)
+static
+int uhash(uhash_ctx_t ahc, const char *msg, long len, char *res)
 /* assumes that msg is in a writable buffer of length divisible by */
 /* L1_PAD_BOUNDARY. Bytes beyond msg[len] may be zeroed.           */
 {
@@ -1859,7 +1866,7 @@ typedef struct umac_ctx {
 
 /* ---------------------------------------------------------------------- */
 
-int umac_reset(umac_ctx_t ctx)
+int umac64_reset(umac_ctx_t ctx)
 /* Reset the hash function to begin a new authentication.        */
 {
     uhash_reset(&ctx->hash);
@@ -1885,7 +1892,7 @@ int umac_delete(umac_ctx_t ctx)
 
 /* ---------------------------------------------------------------------- */
 
-umac_ctx_t umac_new(char key[])
+umac_ctx_t umac64_new(char key[])
 /* Dynamically allocate a umac_ctx struct, initialize variables, 
  * generate subkeys from key. Align to 16-byte boundary.
  */
@@ -1912,7 +1919,7 @@ umac_ctx_t umac_new(char key[])
 
 /* ---------------------------------------------------------------------- */
 
-int umac_final(umac_ctx_t ctx, char tag[], char nonce[8])
+int umac64_final(umac_ctx_t ctx, char tag[], const char nonce[8])
 /* Incorporate any pending data, pad, and generate tag */
 {
     uhash_final(&ctx->hash, (char *)tag);
@@ -1923,7 +1930,7 @@ int umac_final(umac_ctx_t ctx, char tag[], char nonce[8])
 
 /* ---------------------------------------------------------------------- */
 
-int umac_update(umac_ctx_t ctx, char *input, long len)
+int umac64_update(umac_ctx_t ctx, const char *input, long len)
 /* Given len bytes of data, we parse it into L1_KEY_LEN chunks and   */
 /* hash each one, calling the PDF on the hashed output whenever the hash- */
 /* output buffer is full.                                                 */
@@ -1933,17 +1940,6 @@ int umac_update(umac_ctx_t ctx, char *input, long len)
 }
 
 /* ---------------------------------------------------------------------- */
-
-int umac(umac_ctx_t ctx, char *input, 
-         long len, char tag[],
-         char nonce[8])
-/* All-in-one version simply calls umac_update() and umac_final().        */
-{
-    uhash(&ctx->hash, input, len, (char *)tag);
-    pdf_gen_xor(&ctx->pdf, (UINT8 *)nonce, (UINT8 *)tag);
-    
-    return (1);
-}
 
 /* ---------------------------------------------------------------------- */
 /* ---------------------------------------------------------------------- */
@@ -2019,7 +2015,7 @@ static void umac_verify(void)
     if (bytes_over_boundary != 0)
         data_ptr += (16 - bytes_over_boundary);
     memset(data_ptr, 'a', data_len);
-    ctx = umac_new("abcdefghijklmnop");
+    ctx = umac64_new("abcdefghijklmnop");
     
     printf("Testing known vectors.\n\n");
     printf("Msg           %-*s Is\n", UMAC_OUTPUT_LEN * 2, "Should be");
@@ -2028,7 +2024,7 @@ static void umac_verify(void)
     for (i = 0; (unsigned)i < sizeof(lengths)/sizeof(*lengths); i++) {
     	memset(data_ptr, 'a', lengths[i]);
     	umac(ctx, data_ptr, lengths[i], tag, nonce);
-    	umac_reset(ctx);    
+    	umac64_reset(ctx);    
     	printf("'a' * %5d : %.*s ", lengths[i], UMAC_OUTPUT_LEN * 2, results[i]);
     	pbuf(tag, UMAC_OUTPUT_LEN, NULL);
     }
@@ -2037,12 +2033,12 @@ static void umac_verify(void)
            " multiple-call interfaces.\n");
     for (i = 1; i < (int)(sizeof(inc)/sizeof(inc[0])); i++) {
             for (j = 0; j <= data_len-inc[i]; j+=inc[i])
-                umac_update(ctx, data_ptr+j, inc[i]);
-            umac_final(ctx, tag, nonce);
-            umac_reset(ctx);
+                umac64_update(ctx, data_ptr+j, inc[i]);
+            umac64_final(ctx, tag, nonce);
+            umac64_reset(ctx);
 
             umac(ctx, data_ptr, (data_len/inc[i])*inc[i], tag2, nonce);
-            umac_reset(ctx);
+            umac64_reset(ctx);
             nonce[7]++;
             
             if (memcmp(tag,tag2,sizeof(tag)))
@@ -2096,17 +2092,17 @@ static double run_cpb_test(umac_ctx_t ctx, int nbytes, char *data_ptr,
         i = tag_iters;
         iters_per_tag = nbytes / data_len;
         remaining = nbytes % data_len;
-        umac_update(ctx, data_ptr, data_len);
-        umac_final(ctx, tag, nonce);
+        umac64_update(ctx, data_ptr, data_len);
+        umac64_final(ctx, tag, nonce);
         ticks = clock();
         do {
             j = iters_per_tag;
             do {
-                umac_update(ctx, data_ptr, data_len);
+                umac64_update(ctx, data_ptr, data_len);
             } while (--j);
             if (remaining)
-                umac_update(ctx, data_ptr, remaining);
-            umac_final(ctx, tag, nonce);
+                umac64_update(ctx, data_ptr, remaining);
+            umac64_final(ctx, tag, nonce);
             nonce[7] += 1;
         } while (--i);
         ticks = clock() - ticks;
@@ -2147,7 +2143,7 @@ static void speed_test(void)
         data_ptr += (16 - bytes_over_boundary);
     for (i = 0; i < data_len; i++)
         data_ptr[i] = (i*i) % 128;
-    ctx = umac_new("abcdefghijklmnopqrstuvwxyz");
+    ctx = umac64_new("abcdefghijklmnopqrstuvwxyz");
         
     printf("\n");
     if (length_range_low < length_range_high) {

@@ -41,7 +41,8 @@ library
 
   c-sources:           cbits/zlib_alloc_hooks.c
                        cbits/rijndael-alg-fst.c
-                       cbits/umac.c
+                       cbits/umac64.c
+                       cbits/umac128.c
   include-dirs:        include
 
   extra-libraries:     z
