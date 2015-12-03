@@ -1,5 +1,5 @@
 /* -----------------------------------------------------------------------
- * 
+ *
  * umac.h -- C Implementation UMAC Message Authentication
  *
  * Version 0.90 of draft-krovetz-umac-03.txt -- 2004 October
@@ -9,7 +9,7 @@
  * Please report bugs and suggestions to the UMAC webpage.
  *
  * Copyright (c) 1999-2004 Ted Krovetz
- *                                                                 
+ *
  * Permission to use, copy, modify, and distribute this software and
  * its documentation for any purpose and with or without fee, is hereby
  * granted provided that the above copyright notice appears in all copies
@@ -17,10 +17,10 @@
  * holder not be used in advertising or publicity pertaining to
  * distribution of the software without specific, written prior permission.
  *
- * Comments should be directed to Ted Krovetz (tdk@acm.org)                                        
- *                                                                   
+ * Comments should be directed to Ted Krovetz (tdk@acm.org)
+ *
  * ---------------------------------------------------------------------- */
- 
+
  /* ////////////////////// IMPORTANT NOTES /////////////////////////////////
   *
   * 1) This version does not work properly on messages larger than 16MB
@@ -52,68 +52,20 @@
 typedef struct umac_ctx *umac_ctx_t;
 
 umac_ctx_t umac64_new(char key[]);
-/* Dynamically allocate a umac_ctx struct, initialize variables, 
- * generate subkeys from key.
- */
-
-int umac64_reset(umac_ctx_t ctx);
-/* Reset a umac_ctx to begin authenicating a new message */
-
-int umac64_update(umac_ctx_t ctx, const char *input, long len);
-/* Incorporate len bytes pointed to by input into context ctx */
-
-int umac64_final(umac_ctx_t ctx, char tag[], const char nonce[8]);
-/* Incorporate any pending data and the ctr value, and return tag. 
- * This function returns error code if ctr < 0. 
- */
-
-int umac_delete(umac_ctx_t ctx);
-/* Deallocate the context structure */
-
-/* uhash.h */
-
-
-typedef struct uhash_ctx *uhash_ctx_t;
-  /* The uhash_ctx structure is defined by the implementation of the    */
-  /* UHASH functions.                                                   */
- 
-static
-uhash_ctx_t uhash_alloc(char key[16]);
-  /* Dynamically allocate a uhash_ctx struct and generate subkeys using */
-  /* the kdf and kdf_key passed in. If kdf_key_len is 0 then RC6 is     */
-  /* used to generate key with a fixed key. If kdf_key_len > 0 but kdf  */
-  /* is NULL then the first 16 bytes pointed at by kdf_key is used as a */
-  /* key for an RC6 based KDF.                                          */
-  
-static
-int uhash_free(uhash_ctx_t ctx);
-
-static
-int uhash_set_params(uhash_ctx_t ctx,
-                   void       *params);
-
-static
-int uhash_reset(uhash_ctx_t ctx);
-
-static
-int uhash_update(uhash_ctx_t ctx,
-               const char *input,
-               long        len);
-
-static
-int uhash_final(uhash_ctx_t ctx,
-              char        ouput[]);
-
-static
-int uhash(uhash_ctx_t ctx,
-        const char *input,
-        long        len,
-        char        output[]);
+void umac64_reset(umac_ctx_t ctx);
+void umac64_update(umac_ctx_t ctx, const char *input, long len);
+void umac64_final(umac_ctx_t ctx, char tag[], const char nonce[8]);
+void umac_delete(umac_ctx_t ctx);
 
 umac_ctx_t umac128_new(const char key[]);
-int umac128_update(umac_ctx_t ctx, const char *input, long len);
-int umac128_final(umac_ctx_t ctx, char tag[], const char nonce[8]);
-int umac128_reset(umac_ctx_t ctx);
+void umac128_update(umac_ctx_t ctx, const char *input, long len);
+void umac128_final(umac_ctx_t ctx, char tag[], const char nonce[8]);
+void umac128_reset(umac_ctx_t ctx);
+
+typedef struct uhash_ctx *uhash_ctx_t;
+static void uhash_reset(uhash_ctx_t);
+static void uhash_update(uhash_ctx_t, const char *, long);
+static void uhash_final(uhash_ctx_t, char ouput[]);
 
 #ifdef __cplusplus
     }

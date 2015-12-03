@@ -39,14 +39,14 @@ data UmacAllocationFailure = UmacAllocationFailure
 instance Exception UmacAllocationFailure
 
 foreign import ccall umac64_new    :: Ptr CChar -> IO (Ptr (UmacCtx 'U64))
-foreign import ccall umac64_update :: Ptr (UmacCtx 'U64) -> Ptr CChar -> CLong -> IO CInt
-foreign import ccall umac64_final  :: Ptr (UmacCtx 'U64) -> Ptr CChar -> Ptr CChar -> IO CInt
-foreign import ccall umac64_reset  :: Ptr (UmacCtx 'U64) -> IO CInt
+foreign import ccall umac64_update :: Ptr (UmacCtx 'U64) -> Ptr CChar -> CLong -> IO ()
+foreign import ccall umac64_final  :: Ptr (UmacCtx 'U64) -> Ptr CChar -> Ptr CChar -> IO ()
+foreign import ccall umac64_reset  :: Ptr (UmacCtx 'U64) -> IO ()
 
 foreign import ccall umac128_new    :: Ptr CChar -> IO (Ptr (UmacCtx 'U128))
-foreign import ccall umac128_update :: Ptr (UmacCtx 'U128) -> Ptr CChar -> CLong -> IO CInt
-foreign import ccall umac128_final  :: Ptr (UmacCtx 'U128) -> Ptr CChar -> Ptr CChar -> IO CInt
-foreign import ccall umac128_reset  :: Ptr (UmacCtx 'U128) -> IO CInt
+foreign import ccall umac128_update :: Ptr (UmacCtx 'U128) -> Ptr CChar -> CLong -> IO ()
+foreign import ccall umac128_final  :: Ptr (UmacCtx 'U128) -> Ptr CChar -> Ptr CChar -> IO ()
+foreign import ccall umac128_reset  :: Ptr (UmacCtx 'U128) -> IO ()
 
 -- shared between 64 and 128
 foreign import ccall "&umac_delete" umac_delete_ptr :: FinalizerPtr (UmacCtx sz)
@@ -56,9 +56,9 @@ withUMAC (UMAC fp) = withForeignPtr fp
 
 class UmacSize sz where
   umac_new    :: Ptr CChar -> IO (Ptr (UmacCtx sz))
-  umac_update :: Ptr (UmacCtx sz) -> Ptr CChar -> CLong -> IO CInt
-  umac_final  :: Ptr (UmacCtx sz) -> Ptr CChar -> Ptr CChar -> IO CInt
-  umac_reset  :: Ptr (UmacCtx sz) -> IO CInt
+  umac_update :: Ptr (UmacCtx sz) -> Ptr CChar -> CLong -> IO ()
+  umac_final  :: Ptr (UmacCtx sz) -> Ptr CChar -> Ptr CChar -> IO ()
+  umac_reset  :: Ptr (UmacCtx sz) -> IO ()
   umac_tagSize :: proxy sz -> Int
 
 instance UmacSize 'U64 where
@@ -90,7 +90,7 @@ update :: (UmacSize sz, ByteArrayAccess ba) => UMAC sz -> ba -> IO ()
 update ctx input =
   withUMAC ctx        $ \ctxPtr   ->
   withByteArray input $ \inputPtr ->
-  void (umac_update ctxPtr inputPtr (fromIntegral (BA.length input)))
+  umac_update ctxPtr inputPtr (fromIntegral (BA.length input))
 
 final ::
   (UmacSize sz, ByteArray tag, ByteArrayAccess nonce) =>
@@ -101,10 +101,10 @@ final ctx nonce
       withUMAC ctx        $ \ctxPtr   ->
       withByteArray nonce $ \noncePtr ->
       alloc (umac_tagSize ctx) $ \tagPtr   ->
-      void (umac_final ctxPtr tagPtr noncePtr)
+      umac_final ctxPtr tagPtr noncePtr
 
 reset :: UmacSize sz => UMAC sz -> IO ()
-reset ctx = void (withUMAC ctx umac_reset)
+reset ctx = withUMAC ctx umac_reset
 
 ------------------------------------------------------------------------
 
