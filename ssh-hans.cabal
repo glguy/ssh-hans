@@ -28,7 +28,7 @@ library
                        Network.SSH.PrivateKeyFormat
                        Network.SSH.Named
 
-  other-modules:       Crypto.Hash.UMAC
+  other-modules:       Crypto.MAC.UMAC
 
   build-depends:       base         >=4.7      && <4.9,
                        cereal       >=0.5.1.0  && <0.6,

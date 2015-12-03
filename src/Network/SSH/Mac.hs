@@ -39,7 +39,7 @@ import           Data.Word ( Word32 )
 
 import qualified Crypto.MAC.HMAC as HMAC
 import qualified Crypto.Hash as Hash
-import qualified Crypto.Hash.UMAC as UMAC
+import qualified Crypto.MAC.UMAC as UMAC
 import           Data.ByteArray (convert)
 
 import Network.SSH.Named
