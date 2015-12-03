@@ -11,6 +11,7 @@ module Crypto.Hash.UMAC
   , final
   , reset
 
+  , compute
   , compute64
   , compute128
   ) where
@@ -24,8 +25,7 @@ import Foreign.C
 import Foreign.ForeignPtr
 import Foreign.Ptr
 
-import System.IO.Unsafe
-import Data.Foldable (traverse_)
+import Data.Foldable (Foldable,for_)
 
 ------------------------------------------------------------------------
 
@@ -49,6 +49,7 @@ foreign import ccall umac128_final  :: Ptr (UmacCtx 'U128) -> Ptr CChar -> Ptr C
 foreign import ccall umac128_reset  :: Ptr (UmacCtx 'U128) -> IO ()
 
 -- shared between 64 and 128
+foreign import ccall umac_delete :: Ptr (UmacCtx sz) -> IO ()
 foreign import ccall "&umac_delete" umac_delete_ptr :: FinalizerPtr (UmacCtx sz)
 
 withUMAC :: UMAC sz -> (Ptr (UmacCtx sz) -> IO a) -> IO a
@@ -108,22 +109,33 @@ reset ctx = withUMAC ctx umac_reset
 
 ------------------------------------------------------------------------
 
-compute :: forall proxy sz chunk key nonce tag.
-  (UmacSize sz, ByteArrayAccess chunk, ByteArrayAccess nonce, ByteArrayAccess key, ByteArray tag) =>
-  proxy sz -> [chunk] -> key -> nonce -> tag
-compute _ input key nonce = unsafePerformIO $
-  do u <- new key :: IO (UMAC sz)
-     traverse_ (update u) input
-     final u nonce
+compute :: forall proxy t sz chunk key nonce tag.
+  (UmacSize sz, Foldable t, ByteArrayAccess chunk,
+   ByteArrayAccess nonce, ByteArrayAccess key, ByteArray tag) =>
+  proxy sz -> t chunk -> key -> nonce -> tag
+compute sz input key nonce
+  | BA.length nonce /= 8  = error "UMAC: bad nonce"
+  | BA.length key   /= 16 = error "UMAC: bad key"
+  | otherwise =
+      allocAndFreeze (umac_tagSize sz) $ \tagPtr   ->
+      withByteArray key                $ \keyPtr   ->
+      withByteArray nonce              $ \noncePtr ->
+      bracket (umac_new keyPtr) umac_delete $ \ctxPtr ->
+      do for_ input $ \chunk ->
+           withByteArray chunk $ \chunkPtr ->
+             umac_update ctxPtr chunkPtr (fromIntegral (BA.length chunk))
+         umac_final (ctxPtr :: Ptr (UmacCtx sz)) tagPtr noncePtr
 
 compute64 ::
-  (ByteArrayAccess chunk, ByteArrayAccess nonce, ByteArrayAccess key, ByteArray tag) =>
-  [chunk] -> key -> nonce -> tag
+  (Foldable t, ByteArrayAccess chunk, ByteArrayAccess nonce,
+   ByteArrayAccess key, ByteArray tag) =>
+  t chunk -> key -> nonce -> tag
 compute64 = compute (Proxy :: Proxy 'U64)
 
 compute128 ::
-  (ByteArrayAccess chunk, ByteArrayAccess nonce, ByteArrayAccess key, ByteArray tag) =>
-  [chunk] -> key -> nonce -> tag
+  (Foldable t, ByteArrayAccess chunk, ByteArrayAccess nonce,
+   ByteArrayAccess key, ByteArray tag) =>
+  t chunk -> key -> nonce -> tag
 compute128 = compute (Proxy :: Proxy 'U128)
 
 {-# SPECIALIZE compute64  :: [S.ByteString] -> S.ByteString -> S.ByteString -> S.ByteString #-}

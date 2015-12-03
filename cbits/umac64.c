@@ -1839,7 +1839,6 @@ umac_ctx_t umac64_new(char key[])
  */
 {
     umac_ctx_t ctx;
-    char bytes_to_add;
     aes_int_key prf_key;
 
     ctx = (umac_ctx_t)malloc(sizeof(umac_ctx));
