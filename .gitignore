@@ -6,3 +6,4 @@ server.priv
 server.pub
 /stack.yaml
 .stack-work
+server_keys*
