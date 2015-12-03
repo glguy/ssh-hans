@@ -52,7 +52,6 @@
 
 #define UMAC_OUTPUT_LEN       8  /* Alowable: 4, 8, 12, 16              */
 #define FORCE_C_ONLY          1  /* ANSI C and 64-bit integers req'd     */
-#define GLADMAN_AES           0  /* Change to 1 to use Gladman's AES     */
 #define SSE2                  1  /* Is SSE2 is available?                */
 
 /* ---------------------------------------------------------------------- */
@@ -63,11 +62,6 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stddef.h>
-#if GLADMAN_AES
-#include "aes.h"
-#else
-#include "rijndael-alg-fst.h"
-#endif
 
 /* ---------------------------------------------------------------------- */
 /* --- Primitive Data Types ---                                           */
@@ -218,22 +212,12 @@ static void STORE_UINT32_REVERSED(void *ptr, UINT32 x)
 /* UMAC uses AES with 16 byte block and key lengths */
 #define AES_BLOCK_LEN  16
 
-#if GLADMAN_AES
-typedef aes_encrypt_ctx    aes_int_key[1]; /* AES internal */
 
+typedef cryptonite_aes_key aes_int_key[1];
 #define aes_encryption(in,out,int_key) \
-	    aes_encrypt((in),(out),(int_key))
+	    cryptonite_aes_encrypt_ecb((out),(int_key),(in),1)
 #define aes_key_setup(key,int_key) \
-	    aes_encrypt_key128((key),(int_key))
-#else
-#define AES_ROUNDS	   ((UMAC_KEY_LEN / 4) + 6)
-typedef UINT8          aes_int_key[AES_ROUNDS+1][4][4]; /* AES internal */
-#define aes_encryption(in,out,int_key) \
-	    rijndaelEncrypt((u32 *)(int_key), AES_ROUNDS, (u8 *)(in), (u8 *)(out))
-#define aes_key_setup(key,int_key) \
-	    rijndaelKeySetupEnc((u32 *)(int_key), (const unsigned char *)(key), \
-	    UMAC_KEY_LEN*8)
-#endif
+	    cryptonite_aes_initkey((int_key),(key),16)
 
 /* The user-supplied UMAC key is stretched using AES in a counter
  * mode to supply all random bits needed by UMAC. The kdf function takes

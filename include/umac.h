@@ -67,6 +67,21 @@ static void uhash_reset(uhash_ctx_t);
 static void uhash_update(uhash_ctx_t, const char *, long);
 static void uhash_final(uhash_ctx_t, char ouput[]);
 
+/* Copied from cryptonite temporarily until incorporation */
+/* Copied from cryptonite temporarily until incorporation */
+/* Copied from cryptonite temporarily until incorporation */
+typedef struct {
+	unsigned char nbr; /* number of rounds: 10 (128), 12 (192), 14 (256) */
+	unsigned char strength; /* 128 = 0, 192 = 1, 256 = 2 */
+	unsigned char _padding[6];
+	unsigned char data[16*14*2];
+} cryptonite_aes_key;
+void cryptonite_aes_encrypt_ecb(void*,const void*,const void*,unsigned int);
+void cryptonite_aes_initkey(void*,const void*,unsigned char);
+/* Copied from cryptonite temporarily until incorporation */
+/* Copied from cryptonite temporarily until incorporation */
+/* Copied from cryptonite temporarily until incorporation */
+
 #ifdef __cplusplus
     }
 #endif
