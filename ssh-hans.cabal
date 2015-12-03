@@ -40,7 +40,6 @@ library
                        stm          >=2.4.4    && <2.5
 
   c-sources:           cbits/zlib_alloc_hooks.c
-                       cbits/rijndael-alg-fst.c
                        cbits/umac64.c
                        cbits/umac128.c
   include-dirs:        include
