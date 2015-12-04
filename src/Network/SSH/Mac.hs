@@ -37,6 +37,7 @@ import qualified Data.ByteString.Lazy as L
 import           Data.Serialize ( runPut, putWord32be, putWord64be )
 import           Data.Word ( Word32 )
 
+import           Crypto.Error
 import qualified Crypto.MAC.HMAC as HMAC
 import qualified Crypto.Hash as Hash
 import qualified Crypto.MAC.UMAC as UMAC
@@ -159,13 +160,14 @@ mac_hmac_sha2_512_etm = mk_mac_hmac Hash.SHA512 "hmac-sha2-512-etm@openssh.com" 
 ------------------------------------------------------------------------
 
 mk_umac ::
-  ([S.ByteString] -> S.ByteString -> S.ByteString -> S.ByteString) ->
+  ([S.ByteString] -> S.ByteString -> S.ByteString -> CryptoFailable S.ByteString) ->
   ShortByteString -> Bool -> Named (L.ByteString -> Mac)
 mk_umac f name etm = Named name $ \keyStream ->
-  let key = L.toStrict (L.take 16 keyStream) in
+  let key = L.toStrict (L.take (fromIntegral UMAC.keySize) keyStream) in
   Mac { computeMac  = \seqNum input ->
                         let nonce = runPut (putWord64be (fromIntegral seqNum))
-                        in f input key nonce
+                            CryptoPassed mac = f input key nonce
+                        in mac
       , mETM        = etm
       }
 

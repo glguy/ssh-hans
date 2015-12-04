@@ -52,6 +52,7 @@ module Crypto.MAC.UMAC
 
 import           Control.Exception
 import           Control.Monad
+import           Crypto.Error
 import           Data.ByteArray as BA
 import qualified Data.ByteString as S
 import           Data.Foldable
@@ -73,10 +74,7 @@ data UmacCtx (sz :: USize)
 newtype UMAC sz = UMAC (ForeignPtr (UmacCtx sz))
 
 -- | The type of exceptions that can occur using this module
-data UmacException
-  = UmacBadAllocation -- ^ Raised when memory allocation fails in C
-  | UmacBadKey        -- ^ Raised when given key has incorrect length
-  | UmacBadNonce      -- ^ Raised when given nonce has incorrect length
+data UmacException = UmacBadAllocation -- ^ Raised when memory allocation fails in C
   deriving (Show, Read, Eq, Ord)
 
 instance Exception UmacException
@@ -145,15 +143,15 @@ umac_new' key =
 
 -- | Allocate a new UMAC context initialized with the given key.
 -- The key should be 'keySize' bytes long.
-new :: (UmacSize sz, ByteArrayAccess key) => key -> IO (UMAC sz)
+new :: (UmacSize sz, ByteArrayAccess key) => key -> IO (CryptoFailable (UMAC sz))
 new key
-  | BA.length key /= keySize = throwIO UmacBadKey
+  | BA.length key /= keySize = return (CryptoFailed CryptoError_MacKeyInvalid)
   | otherwise =
       withByteArray key $ \keyPtr ->
       mask_ $ -- ensure finalizer gets installed
       do u  <- umac_new' keyPtr
          fp <- newForeignPtr umac_delete_ptr u
-         return (UMAC fp)
+         return (CryptoPassed (UMAC fp))
 
 -- | Incorporate a chunk of input into the current 'UMAC' context.
 update :: (UmacSize sz, ByteArrayAccess ba) => UMAC sz -> ba -> IO ()
@@ -167,10 +165,11 @@ update ctx input =
 -- for computing another MAC.
 final ::
   (UmacSize sz, ByteArray tag, ByteArrayAccess nonce) =>
-  UMAC sz -> nonce -> IO tag
+  UMAC sz -> nonce -> IO (CryptoFailable tag)
 final ctx nonce
-  | BA.length nonce /= nonceSize = throwIO UmacBadNonce
+  | BA.length nonce /= nonceSize = return (CryptoFailed CryptoError_IvSizeInvalid)
   | otherwise =
+      fmap CryptoPassed   $
       withUMAC ctx        $ \ctxPtr   ->
       withByteArray nonce $ \noncePtr ->
       alloc (tagSize ctx) $ \tagPtr   ->
@@ -201,11 +200,12 @@ compute :: forall proxy t sz chunk key nonce tag.
   t chunk  {- ^ input chunks                  -} ->
   key      {- ^ key                           -} ->
   nonce    {- ^ nonce                         -} ->
-  tag      {- ^ computed MAC                  -}
+  CryptoFailable tag {- ^ computed MAC        -}
 compute sz input key nonce
-  | BA.length nonce /= nonceSize = throw UmacBadNonce
-  | BA.length key   /= keySize   = throw UmacBadKey
+  | BA.length nonce /= nonceSize = CryptoFailed CryptoError_IvSizeInvalid
+  | BA.length key   /= keySize   = CryptoFailed CryptoError_MacKeyInvalid
   | otherwise =
+      CryptoPassed                $
       allocAndFreeze (tagSize sz) $ \tagPtr   ->
       withByteArray key           $ \keyPtr   ->
       withByteArray nonce         $ \noncePtr ->
@@ -222,7 +222,7 @@ compute64 ::
   t chunk {- ^ input chunks -} ->
   key     {- ^ key          -} ->
   nonce   {- ^ nonce        -} ->
-  tag     {- ^ computed MAC -}
+  CryptoFailable tag {- ^ computed MAC -}
 compute64 = compute (Proxy :: Proxy 'U64)
 
 -- | This is 'compute' specialized to a 128-bit MAC output
@@ -232,8 +232,8 @@ compute128 ::
   t chunk {- ^ input chunks -} ->
   key     {- ^ key          -} ->
   nonce   {- ^ nonce        -} ->
-  tag     {- ^ computed MAC -}
+  CryptoFailable tag {- ^ computed MAC -}
 compute128 = compute (Proxy :: Proxy 'U128)
 
-{-# SPECIALIZE compute64  :: [S.ByteString] -> S.ByteString -> S.ByteString -> S.ByteString #-}
-{-# SPECIALIZE compute128 :: [S.ByteString] -> S.ByteString -> S.ByteString -> S.ByteString #-}
+{-# SPECIALIZE compute64  :: [S.ByteString] -> S.ByteString -> S.ByteString -> CryptoFailable S.ByteString #-}
+{-# SPECIALIZE compute128 :: [S.ByteString] -> S.ByteString -> S.ByteString -> CryptoFailable S.ByteString #-}
