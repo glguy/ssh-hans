@@ -135,6 +135,14 @@ instance UmacSize 'U128 where
   umac_reset  = umac128_reset
   tagSize   _ = 16
 
+-- | Wrapper for 'umac_new' that throws an exception in the case that
+-- allocation fails.
+umac_new' :: UmacSize sz => Ptr CChar -> IO (Ptr (UmacCtx sz))
+umac_new' key =
+  do u <- umac_new key
+     when (u == nullPtr) (throwIO UmacBadAllocation)
+     return u
+
 -- | Allocate a new UMAC context initialized with the given key.
 -- The key should be 'keySize' bytes long.
 new :: (UmacSize sz, ByteArrayAccess key) => key -> IO (UMAC sz)
@@ -143,8 +151,7 @@ new key
   | otherwise =
       withByteArray key $ \keyPtr ->
       mask_ $ -- ensure finalizer gets installed
-      do u <- umac_new keyPtr
-         when (u == nullPtr) (throwIO UmacBadAllocation)
+      do u  <- umac_new' keyPtr
          fp <- newForeignPtr umac_delete_ptr u
          return (UMAC fp)
 
@@ -202,7 +209,7 @@ compute sz input key nonce
       allocAndFreeze (tagSize sz) $ \tagPtr   ->
       withByteArray key           $ \keyPtr   ->
       withByteArray nonce         $ \noncePtr ->
-      bracket (umac_new keyPtr) umac_delete $ \ctxPtr ->
+      bracket (umac_new' keyPtr) umac_delete $ \ctxPtr ->
       do for_ input $ \chunk ->
            withByteArrayLen chunk $ \chunkPtr chunkLen ->
              umac_update ctxPtr chunkPtr (fromIntegral chunkLen)
