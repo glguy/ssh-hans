@@ -553,7 +553,7 @@ getSshMsgTag  = label "SshMsgTag" $
 getSshMsg :: Get SshMsg
 getSshMsg  =
   do tag <- getSshMsgTag
-     case tag of
+     label (show tag) $ case tag of
        SshMsgTagDisconnect              -> getSshDisconnect
        SshMsgTagIgnore                  -> SshMsgIgnore <$> getString
        SshMsgTagUnimplemented           -> SshMsgUnimplemented <$> getWord32be
@@ -591,7 +591,7 @@ getSshMsg  =
 
 getSshDiscReason :: Get SshDiscReason
 getSshDiscReason  = label "SshDiscReason" $
-  do tag <- getWord8
+  do tag <- getWord32be
      case tag of
        0  -> return SshDiscNoReason
        1  -> return SshDiscHostNotAllowed
