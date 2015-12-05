@@ -15,6 +15,7 @@ import Control.Applicative ((<|>))
 import Data.List (find)
 import Data.IORef (readIORef, modifyIORef')
 import Control.Concurrent
+import Control.Monad
 
 import Data.ByteString.Short (ShortByteString)
 import qualified Data.ByteString as S
@@ -55,6 +56,8 @@ rekeyConnection client state i_s i_c =
      suite <- maybe (fail "negotiation failed") return
             $ computeSuite sAuth i_s i_c
 
+     handleMissedGuess client state i_s i_c
+
      SshMsgKexDhInit pub_c <- receive client state
      (pub_s, k)            <- kexRun (suite_kex suite) pub_c
 
@@ -69,6 +72,23 @@ rekeyConnection client state i_s i_c =
      send client state (SshMsgKexDhReply (suite_host_pub suite) pub_s sig)
 
      installSecurity client state suite sid k
+
+
+-- | When the client's proposal says that a kex guess packet
+-- is coming, but the guess was wrong, we must drop the next
+-- packet.
+handleMissedGuess ::
+  Client -> SshState ->
+  SshProposal {- ^ server -} ->
+  SshProposal {- ^ client -} ->
+  IO ()
+handleMissedGuess client state i_s i_c
+  | sshFirstKexFollows i_c
+  , kex:_ <- sshKexAlgs i_c
+  , kex `notElem` sshKexAlgs i_s = void (receive client state)
+
+  | otherwise = return ()
+
 
 installSecurity ::
   Client -> SshState -> CipherSuite ->
