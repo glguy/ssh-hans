@@ -37,6 +37,7 @@ data AuthResult
 data SessionEvent
   = SessionData S.ByteString
   | SessionClose
+  | SessionEof
   | SessionWinsize SshWindowSize
 
 data Client = Client
@@ -59,6 +60,12 @@ data Client = Client
                     IO ()
 
   , cDirectTcp   :: S.ByteString -> Word32 ->
+                    Chan SessionEvent ->
+                    (Maybe S.ByteString -> IO ()) ->
+                    IO Bool
+
+  -- | Client requested executing a command. Return True to accept
+  , cRequestExec :: S.ByteString ->
                     Chan SessionEvent ->
                     (Maybe S.ByteString -> IO ()) ->
                     IO Bool

@@ -10,7 +10,7 @@ import           Network.SSH.Named
 import           Network.SSH.PubKey
 import           Network.SSH.PrivateKeyFormat
 
-import           Control.Monad ( forever, (<=<) )
+import           Control.Monad ( void, forever, (<=<) )
 import           Control.Exception
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Short as Short
@@ -20,6 +20,7 @@ import           Network
                      ( PortID(..), HostName, PortNumber, withSocketsDo, listenOn
                      , accept, Socket )
 import           System.IO ( Handle, hClose )
+import           System.IO.Error ( isIllegalOperation )
 
 import System.Posix.IO ( fdToHandle, closeFd )
 import Control.Concurrent
@@ -77,6 +78,13 @@ mkClient creds (h,_,_) = Client { .. }
 
   cDirectTcp _host _port _events _writeback = return False
 
+  cRequestExec "echo" events writeback =
+    do void (forkIO (echoServer events writeback))
+       return True
+
+  cRequestExec _command _events _writeback =
+    return False
+
   cOpenShell term winsize termflags eventChannel writeBytes =
     do (masterFd, slaveFd) <-
          openpty
@@ -87,14 +95,17 @@ mkClient creds (h,_,_) = Client { .. }
 
        masterH <- fdToHandle masterFd
 
-       _ <- forkIO $
+       void $ forkIO $
          forever (do out <- S.hGetSome masterH 1024
                      writeBytes (Just out)
                  ) `finally` writeBytes Nothing
+                   `catch` \e ->
+                        if isIllegalOperation e then return () else throwIO e
 
-       _ <- forkIO $
+       void $ forkIO $
          let loop = do event <- readChan eventChannel
                        case event of
+                         SessionEof -> loop
                          SessionClose -> closeFd slaveFd
                          SessionWinsize winsize' ->
                            do changePtyWinsize masterFd (convertWindowSize winsize')
@@ -132,7 +143,7 @@ mkClient creds (h,_,_) = Client { .. }
         -> return AuthAccepted
       _ -> return (AuthFailed ["password","publickey"])
 
-  cAuthHandler _session_id user _svc m =
+  cAuthHandler _session_id _user _svc _m =
        return (AuthFailed ["password","publickey"])
 
 loadServerKeys :: FilePath -> IO [ServerCredential]
@@ -144,3 +155,14 @@ loadServerKeys path =
                      [ Named (Short.toShort (sshPubCertName pub)) (pub, priv)
                      | (pub,priv,_comment) <- pk
                      ]
+
+echoServer :: Chan SessionEvent -> (Maybe S.ByteString -> IO ()) -> IO ()
+echoServer chan write = loop
+  where
+  loop =
+    do event <- readChan chan
+       case event of
+         SessionData xs -> write (Just xs) >> loop
+         SessionEof   -> return ()
+         SessionClose -> return ()
+         SessionWinsize{} -> loop

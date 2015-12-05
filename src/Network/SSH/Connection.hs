@@ -207,7 +207,7 @@ channelEof channelId =
      case Map.lookup channelId channels of
        Nothing -> fail "Bad channel!"
        Just channel ->
-            liftIO (writeChan (sshChannelEvents channel) SessionClose)
+            liftIO (writeChan (sshChannelEvents channel) SessionEof)
 
 channelClose :: Word32 -> Connection ()
 channelClose channelId =
@@ -273,7 +273,13 @@ handleRequest request channelId channel =
                      (sshChannelEvents channel)
                      (channelWrite client state channelId channel)
                 return True
-    SshChannelRequestExec _command        -> return False
+
+    SshChannelRequestExec command ->
+      do (client, state) <- Connection ask
+         liftIO $ cRequestExec client command
+                   (sshChannelEvents channel)
+                   (channelWrite client state channelId channel)
+
     SshChannelRequestSubsystem _subsystem -> return False
     SshChannelRequestWindowChange winsize ->
       do liftIO (writeChan (sshChannelEvents channel) (SessionWinsize winsize))
