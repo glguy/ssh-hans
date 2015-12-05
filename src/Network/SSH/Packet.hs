@@ -11,6 +11,7 @@ import Network.SSH.Protocol
 
 import           Control.Applicative ((<|>))
 import           Control.Monad (unless, guard)
+import           Data.ByteArray (constEq)
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Lazy as L
 import           Data.Char ( chr )
@@ -97,22 +98,6 @@ putSshPacket seqNum Cipher{..} mac gen bytes = (packet,Cipher{cipherState=st',..
 
 -- Parsing ---------------------------------------------------------------------
 
-getCrLf :: Get ()
-getCrLf  =
-  do cr <- getWord8
-     guard (cr == 13)
-
-     left <- remaining
-     if left > 0
-        then do lf <- getWord8
-                guard (lf == 10)
-        else return ()
-
-getCh :: Char -> Get ()
-getCh c =
-  do c' <- getWord8
-     guard (c == chr (fromIntegral c'))
-
 getOneLine :: Get S.ByteString
 getOneLine =
   do n <- lookAhead (findCrLf 0)
@@ -136,54 +121,49 @@ getSshPacket ::
   Word32 -> Cipher -> Mac -> Get (S.ByteString,Cipher)
 getSshPacket seqNum Cipher{..} mac
   | mETM mac = label "SshPacket" $
-  do packetLen <- getWord32be
-     payload   <- getBytes (fromIntegral packetLen)
-     let computedSig = computeMac mac seqNum [runPut (putWord32be packetLen), payload]
-     sig <- getBytes (S.length computedSig)
-     unless (sig == computedSig) (fail "signature validation failed")
 
-     let (st', bytes) = decrypt seqNum cipherState payload
-     case runGet (finish (fromIntegral packetLen)) bytes of
+  do -- figure out packet size
+     packetLen <- getWord32be
+     cipherText <- getBytes (fromIntegral packetLen)
+
+     -- validate signature
+     let computedSig = computeMac mac seqNum
+                         [runPut (putWord32be packetLen), cipherText]
+     actualSig <- getBytes (S.length computedSig)
+     unless (constEq actualSig computedSig)
+       (fail "signature validation failed")
+
+     -- compute payload
+     let (st', payload) = decrypt seqNum cipherState payload
+     case runGet removePadding payload of
        Left e -> fail e
        Right x -> return (x,Cipher{cipherState=st',..})
 
-  where
-  finish n =
-    do padLen <- fmap fromIntegral getWord8
-       unless (4 <= padLen && padLen < n) (fail "bad padding length")
-       getBytes (n-padLen-1)
-
 -- Original packet format without ETM
 getSshPacket seqNum Cipher{..} mac = label "SshPacket" $
-  do let blockLen = max blockSize 8
+
+  do -- figure out packet size
+     let blockLen = max blockSize 8
      firstBlock <- lookAhead (getBytes blockLen)
-     let packetLen = getLength seqNum cipherState firstBlock
+     let payloadLen = getLength seqNum cipherState firstBlock
 
-     -- decrypt and decode the packet
-     ((payload,sig'),cipher') <- decryptGet (packetLen + 4) $
-       do sig' <- lookAhead genSig
+     -- compute payload
+     cipherText <- getBytes (payloadLen + 4)
+     let (st',payload) = decrypt seqNum cipherState cipherText
 
-          skip 4
-          paddingLen <- getWord8
-          n          <- remaining
-          payload    <- getBytes (n - fromIntegral paddingLen)
-          return (payload,sig')
+     -- validate signature
+     let computedSig = computeMac mac seqNum [payload]
+     actualSig <- getBytes (S.length computedSig)
+     unless (constEq computedSig actualSig)
+       (fail "Signature validation failed")
 
-     sig <- getBytes (S.length sig')
-     unless (sig == sig') (fail ("Signature validation failed: " ++ show (sig, sig')))
+     case runGet (skip 4 >> removePadding) payload of
+       Left e -> fail e
+       Right x -> return (x,Cipher{cipherState=st',..})
 
-     return (payload, cipher')
-
-  where
-
-  decryptGet len m =
-     do encBytes <- getBytes len
-        let (st',bytes) = decrypt seqNum cipherState encBytes
-        case runGet m bytes of
-          Right a  -> return (a,Cipher{cipherState=st',..})
-          Left err -> fail err
-
-  genSig =
-    do payload <- getBytes =<< remaining
-       return (computeMac mac seqNum [payload])
-
+removePadding :: Get S.ByteString
+removePadding =
+  do padLen <- fmap fromIntegral getWord8
+     n      <- remaining
+     unless (4 <= padLen && padLen < n) (fail "bad padding length")
+     getBytes (n - padLen)

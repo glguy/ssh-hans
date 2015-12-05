@@ -295,9 +295,9 @@ mk_cipher_gcm (CipherName name)
   = Named name
   $ \ CipherKeys { ckInitialIV = initial_iv, ckEncKey = key } ->
 
-  let lenLen, ivLen, tagLen :: Int
+  let lenLen, fixedLen, tagLen :: Int
       lenLen = 4
-      ivLen = 12
+      fixedLen = 4
       tagLen = 16
 
       aesKey :: cipher
@@ -306,15 +306,14 @@ mk_cipher_gcm (CipherName name)
       aesBlockSize                = Cipher.blockSize aesKey
 
       Right (fixed, invocation_counter0) =
-        runGet (liftA2 (,) getWord32be getWord64be)
-               (grab ivLen initial_iv)
+        runGetLazy (liftA2 (,) (getByteString fixedLen) getWord64be) initial_iv
 
       mkAead :: Word64 -> Cipher.AEAD cipher
       mkAead counter
         = throwCryptoError
         $ Cipher.aeadInit Cipher.AEAD_GCM aesKey
         $ runPut
-        $ putWord32be fixed >> putWord64be counter
+        $ putByteString fixed >> putWord64be counter
 
       dec :: Word32 -> Word64 -> S.ByteString -> (Word64, S.ByteString) -- XXX: failable
       dec _ invocation_counter input_text = (invocation_counter+1, len_part<>plain_text)
