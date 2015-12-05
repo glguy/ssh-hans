@@ -59,7 +59,8 @@ rekeyConnection client state i_s i_c =
      handleMissedGuess client state i_s i_c
 
      SshMsgKexDhInit pub_c <- receive client state
-     (pub_s, k)            <- kexRun (suite_kex suite) pub_c
+     (pub_s, kexFinish)    <- kexRun (suite_kex suite)
+     k <- maybe (fail "bad remote public") return (kexFinish pub_c)
 
      let sid = SshSessionId
              $ kexHash (suite_kex suite)
@@ -187,4 +188,3 @@ supportedKex hostKeyAlgs cookie =
     , sshFirstKexFollows   = False
     , sshProposalCookie    = cookie
     }
-

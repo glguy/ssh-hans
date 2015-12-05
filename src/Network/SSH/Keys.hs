@@ -82,7 +82,8 @@ genKey hash k (SshSessionId h) (SshSessionId o) = \ x ->
     k_n = chunk k_prev
 
 data Kex = Kex
-  { kexRun :: S.ByteString -> IO (S.ByteString, S.ByteString)
+  { kexRun :: IO (S.ByteString, S.ByteString -> Maybe S.ByteString)
+     -- ^ (local public, remote public -> shared secret)
   , kexHash :: S.ByteString -> S.ByteString
   }
 
@@ -133,16 +134,26 @@ ecdhSha2Nistp521
 
 runDh ::
   DH.Params ->
-  S.ByteString                    {- ^ encoded client public value -} ->
-  IO (S.ByteString, S.ByteString) {- ^ server public value, shared secret -}
-runDh params raw_pub_c =
-  do pub_c <- case runGet getMpInt raw_pub_c of
-                Right pub_c -> return pub_c
-                Left e      -> fail e
-     priv <- DH.generatePrivate params
-     let DH.PublicNumber pub_s = DH.calculatePublic params priv
-         DH.SharedKey shared = DH.getShared params priv (DH.PublicNumber pub_c)
-     return (runPut (putMpInt pub_s), runPut (putMpInt shared))
+  IO (S.ByteString, S.ByteString -> Maybe S.ByteString)
+   {- ^ local public value, remote public -> shared secret -}
+runDh params =
+
+  do priv <- DH.generatePrivate params
+
+     let serialize = runPut . putMpInt
+
+         DH.PublicNumber pub_s = DH.calculatePublic params priv
+
+         computeSecret raw_pub_c
+           | Right pub_c <- runGet getMpInt raw_pub_c
+           , let DH.SharedKey shared = DH.getShared params priv
+                                          (DH.PublicNumber pub_c)
+           = Just (serialize shared)
+
+           | otherwise = Nothing
+
+     return (serialize pub_s, computeSecret)
+
 
 -- |Group 2 from RFC 2409
 group1 :: DH.Params
@@ -159,26 +170,25 @@ group14 = DH.Params
 
 runEcdh ::
   ECC.Curve ->
-  S.ByteString                    {- ^ encoded client public value -} ->
-  IO (S.ByteString, S.ByteString) {- ^ server public value, shared secret -}
-runEcdh curve raw_pub_c =
+  IO (S.ByteString, S.ByteString -> Maybe S.ByteString)
+      {- ^ local public value, remote public -> shared secret -}
+runEcdh curve =
 
-  do pub_c <- case runGet getString raw_pub_c of
-                Left _ -> fail "bad client public point 1"
-                Right raw_pub_c1 ->
-                  case pointFromBytes curve raw_pub_c1 of
-                    CryptoFailed _ -> fail "bad client public point"
-                    CryptoPassed pub_c -> return pub_c
+  do priv <- ECDH.generatePrivate curve
 
-     priv <- ECDH.generatePrivate curve
+     let serialize = runPut . putString . pointToBytes curve
 
-     let pub_s     = ECDH.calculatePublic curve priv
-         raw_pub_s = runPut (putString (pointToBytes curve pub_s))
+         pub_s     = ECDH.calculatePublic curve priv
 
-         ECDH.SharedKey shared = ECDH.getShared curve priv pub_c
-         raw_shared            = runPut (putMpInt shared)
+         computeSecret raw_pub_c
+           | Right raw_pub_c1   <- runGet getString raw_pub_c
+           , CryptoPassed pub_c <- pointFromBytes curve raw_pub_c1
+           , let ECDH.SharedKey shared = ECDH.getShared curve priv pub_c
+           = Just (runPut (putMpInt shared))
 
-     return (raw_pub_s, raw_shared)
+           | otherwise = Nothing
+
+     return (serialize pub_s, computeSecret)
 
 ------------------------------------------------------------------------
 
@@ -192,30 +202,29 @@ curve25519sha256
 -- | Implements key exchange as defined by
 -- curve25519-sha256@libssh.org.txt
 runCurve25519dh ::
-  S.ByteString                    {- ^ client public -} ->
-  IO (S.ByteString, S.ByteString) {- ^ server public, shared key -}
-runCurve25519dh raw_pub_c =
-
-     -- Section 2: Transmit public key as "string"
-  do pub_bytes_c <- case runGet getString raw_pub_c of
-                      Left _       -> fail "bad client public point 1"
-                      Right pub_bytes -> return pub_bytes
+  IO (S.ByteString, S.ByteString -> Maybe S.ByteString)
+  {- ^ local public, remote public -> shared key -}
+runCurve25519dh =
 
      -- fails if key isn't 32 bytes long
-     pub_c <- case C25519.publicKey pub_bytes_c of
-                CryptoFailed _     -> fail "bad client public point 2"
-                CryptoPassed pub_c -> return pub_c
-
-     -- fails if key isn't 32 bytes long
-     CryptoPassed priv <- fmap C25519.secretKey
+  do CryptoPassed priv <- fmap C25519.secretKey
                                (getRandomBytes 32 :: IO S.ByteString)
 
-         -- Section 2: Transmit public key as "string"
+     -- Section 2: Transmit public key as "string"
      let raw_pub_s  = runPut $ putString $ convert
                     $ C25519.toPublic priv
 
-         -- Section 4.3: Treat shared key bytes as "integer"
-         raw_secret = runPut $ putMpInt $ os2ip
-                    $ C25519.dh pub_c priv
+         computeSecret raw_pub_c
+             -- Section 2: Transmit public key as "string"
+           | Right pub_bytes_c <- runGet getString raw_pub_c
 
-     return (raw_pub_s, raw_secret)
+             -- fails if key isn't 32 bytes long
+           , CryptoPassed pub_c <- C25519.publicKey pub_bytes_c
+
+             -- Section 4.3: Treat shared key bytes as "integer"
+           = Just $ runPut $ putMpInt $ os2ip $ C25519.dh pub_c priv
+
+           | otherwise = Nothing
+
+
+     return (raw_pub_s, computeSecret)
