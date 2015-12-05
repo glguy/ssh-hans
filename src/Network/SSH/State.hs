@@ -19,6 +19,7 @@ import           Data.IORef
 import           Data.Word
 import           Data.Serialize
 import           Control.Concurrent
+import           Control.Monad
 import           Data.ByteString.Short (ShortByteString)
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Char8 as S8
@@ -137,16 +138,17 @@ receive client SshState { .. } = loop
 parseFrom :: Client -> IORef S.ByteString -> Get a -> IO a
 parseFrom handle buffer body =
   do bytes <- readIORef buffer
-     go (runGetPartial body bytes)
+     go (S.null bytes) (runGetPartial body bytes)
 
   where
   -- boolean: beginning of packet
-  go (Partial k) =
+  go beginning (Partial k) =
     do bytes <- cGet handle 32752
-       go (k bytes)
+       when (beginning && S.null bytes) (fail "Connection closed")
+       go False (k bytes)
 
-  go (Done a bs) =
+  go _ (Done a bs) =
     do writeIORef buffer bs
        return a
 
-  go (Fail s _) = fail s
+  go _ (Fail s _) = fail s
