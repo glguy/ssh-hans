@@ -471,7 +471,7 @@ putDhReply cert f sig =
      putString (runPut (putSshSig sig))
 
 putSshDiscReason :: Putter SshDiscReason
-putSshDiscReason r = putWord32 $! case r of
+putSshDiscReason r = putWord32be $! case r of
   SshDiscNoReason                    -> 0
   SshDiscHostNotAllowed              -> 1
   SshDiscProtocolError               -> 2
