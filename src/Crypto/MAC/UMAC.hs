@@ -1,4 +1,5 @@
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE PolyKinds #-}
@@ -57,6 +58,7 @@ import           Data.ByteArray as BA
 import qualified Data.ByteString as S
 import           Data.Foldable
 import           Data.Proxy
+import           Data.Typeable
 import           Foreign.C
 import           Foreign.ForeignPtr
 import           Foreign.Ptr
@@ -75,7 +77,7 @@ newtype UMAC sz = UMAC (ForeignPtr (UmacCtx sz))
 
 -- | The type of exceptions that can occur using this module
 data UmacException = UmacBadAllocation -- ^ Raised when memory allocation fails in C
-  deriving (Show, Read, Eq, Ord)
+  deriving (Show, Read, Eq, Ord, Typeable)
 
 instance Exception UmacException
 
