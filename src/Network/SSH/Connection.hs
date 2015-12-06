@@ -1,6 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE CPP #-}
 module Network.SSH.Connection where
 
 import Network.SSH.Messages
@@ -21,6 +22,10 @@ import Control.Monad.Trans.Class
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Reader (ask, ReaderT(..), runReaderT)
 import Control.Monad.Trans.State (get,put,modify,StateT, evalStateT)
+
+#if !MIN_VERSION_base(4,8,0)
+import Control.Applicative
+#endif
 
 data SshChannel = SshChannel
   { sshChannelRemote        :: !Word32
