@@ -109,10 +109,11 @@ installSecurity client state suite sid k =
 transitionKeysOutgoing :: CipherSuite -> Keys -> SshState -> IO ()
 transitionKeysOutgoing CipherSuite{..} Keys{..} SshState{..} =
   do compress <- makeCompress suite_s2c_comp
-     modifyMVar_ sshSendState $ \(seqNum,_,_,_,drg) ->
+     modifyMVar_ sshSendState $ \(seqNum,_,_,_,_,drg) ->
        return ( seqNum
-              , suite_s2c_cipher k_s2c_cipherKeys
-              , suite_s2c_mac    k_s2c_integKey
+              , suite_s2c_cipher
+              , activateCipherE k_s2c_cipherKeys suite_s2c_cipher
+              , suite_s2c_mac k_s2c_integKey
               , compress
               , drg
               )
@@ -120,16 +121,17 @@ transitionKeysOutgoing CipherSuite{..} Keys{..} SshState{..} =
 transitionKeysIncoming :: CipherSuite -> Keys -> SshState -> IO ()
 transitionKeysIncoming CipherSuite{..} Keys{..} SshState{..} =
   do decompress <- makeDecompress suite_c2s_comp
-     modifyIORef' sshRecvState $ \(seqNum, _, _, _) ->
+     modifyIORef' sshRecvState $ \(seqNum, _, _, _, _) ->
        ( seqNum
-       , suite_c2s_cipher k_c2s_cipherKeys
-       , suite_c2s_mac    k_c2s_integKey
+       , suite_c2s_cipher
+       , activateCipherD k_c2s_cipherKeys suite_c2s_cipher
+       , suite_c2s_mac k_c2s_integKey
        , decompress
        )
 
 data CipherSuite = CipherSuite
   { suite_kex :: Kex
-  , suite_c2s_cipher, suite_s2c_cipher :: CipherKeys -> Cipher
+  , suite_c2s_cipher, suite_s2c_cipher :: Cipher
   , suite_c2s_mac   , suite_s2c_mac    :: L.ByteString -> Mac
   , suite_c2s_comp  , suite_s2c_comp   :: Compression
   , suite_host_priv :: PrivateKey
@@ -144,27 +146,23 @@ computeSuite auths server client =
 
      suite_kex        <- lookupNamed allKex =<< det sshKexAlgs
 
-     c2s_cipher_name  <- det (sshClientToServer.sshEncAlgs)
-     suite_c2s_cipher <- lookupNamed allCipher c2s_cipher_name
+     suite_c2s_cipher <- lookupNamed allCipher =<< det (sshClientToServer.sshEncAlgs)
 
-     s2c_cipher_name  <- det (sshServerToClient.sshEncAlgs)
-     suite_s2c_cipher <- lookupNamed allCipher s2c_cipher_name
+     suite_s2c_cipher <- lookupNamed allCipher =<< det (sshServerToClient.sshEncAlgs)
 
-     suite_c2s_mac <- if c2s_cipher_name `elem` aeadModes
+     suite_c2s_mac <- if aeadMode suite_c2s_cipher
                         then Just (namedThing mac_none)
                         else lookupNamed allMac =<< det (sshClientToServer.sshMacAlgs)
 
-     suite_s2c_mac <- if s2c_cipher_name `elem` aeadModes
+     suite_s2c_mac <- if aeadMode suite_s2c_cipher
                         then Just (namedThing mac_none)
                         else lookupNamed allMac =<< det (sshServerToClient.sshMacAlgs)
 
      (suite_host_pub, suite_host_priv) <- lookupNamed auths =<< det sshServerHostKeyAlgs
 
-     s2c_comp_name <- det (sshServerToClient.sshCompAlgs)
-     suite_s2c_comp <- lookupNamed allCompression s2c_comp_name
+     suite_s2c_comp <- lookupNamed allCompression =<< det (sshServerToClient.sshCompAlgs)
 
-     c2s_comp_name <- det (sshClientToServer.sshCompAlgs)
-     suite_c2s_comp <- lookupNamed allCompression c2s_comp_name
+     suite_c2s_comp <- lookupNamed allCompression =<< det (sshClientToServer.sshCompAlgs)
 
      return CipherSuite{..}
 

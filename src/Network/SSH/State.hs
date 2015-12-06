@@ -19,6 +19,7 @@ import           Data.IORef
 import           Data.Word
 import           Data.Serialize
 import           Control.Concurrent
+import           Control.Exception
 import           Control.Monad
 import           Data.ByteString.Short (ShortByteString)
 import qualified Data.ByteString as S
@@ -82,9 +83,9 @@ data Client = Client
 type CompressFun = S.ByteString -> IO L.ByteString
 
 data SshState = SshState
-  { sshRecvState :: !(IORef (Word32, Cipher, Mac, CompressFun)) -- ^ Client context
+  { sshRecvState :: !(IORef (Word32, Cipher, ActiveCipher, Mac, CompressFun)) -- ^ Client context
   , sshBuf       :: !(IORef S.ByteString)
-  , sshSendState :: !(MVar (Word32, Cipher, Mac, CompressFun, ChaChaDRG)) -- ^ Server encryption context
+  , sshSendState :: !(MVar (Word32, Cipher, ActiveCipher, Mac, CompressFun, ChaChaDRG)) -- ^ Server encryption context
   , sshSessionId :: !(IORef (Maybe SshSessionId))
   , sshAuthMethods :: [ServerCredential]
   , sshIdents :: !(IORef (SshIdent, SshIdent)) -- server, client
@@ -96,10 +97,13 @@ type ServerCredential = Named (SshPubCert, PrivateKey)
 initialState :: [ServerCredential] -> IO SshState
 initialState creds =
   do drg          <- drgNew
-     sshRecvState <- newIORef (0,namedThing cipher_none nullKeys
+     let none = namedThing cipher_none
+     sshRecvState <- newIORef (0,none
+                                ,activateCipherD nullKeys none
                                 ,namedThing mac_none ""
                                 ,return . L.fromStrict) -- no decompression
-     sshSendState <- newMVar  (0,namedThing cipher_none nullKeys
+     sshSendState <- newMVar  (0,none
+                                ,activateCipherE nullKeys none
                                 ,namedThing mac_none ""
                                 ,return . L.fromStrict -- no compression
                                 ,drg)
@@ -115,24 +119,24 @@ newCookie = SshCookie `fmap` getRandomBytes 16
 
 send :: Client -> SshState -> SshMsg -> IO ()
 send client SshState { .. } msg =
-  modifyMVar_ sshSendState $ \(seqNum, cipher, mac, comp, gen) ->
+  modifyMVar_ sshSendState $ \(seqNum, cipher, activeCipher, mac, comp, gen) ->
     do payload <- comp (runPut (putSshMsg msg))
-       let (pkt,cipher',gen') = putSshPacket seqNum cipher mac gen payload
+       let (pkt,activeCipher',gen') = putSshPacket seqNum cipher activeCipher mac gen payload
        cPut client pkt
-       return (seqNum+1, cipher',mac, comp, gen')
+       return (seqNum+1, cipher, activeCipher',mac, comp, gen')
 
 
 receive :: Client -> SshState -> IO SshMsg
 receive client SshState { .. } = loop
   where
   loop =
-    do (seqNum, cipher, mac, comp) <- readIORef sshRecvState
-       (payload, cipher') <- parseFrom client sshBuf
-                           $ getSshPacket seqNum cipher mac
+    do (seqNum, cipher, activeCipher, mac, comp) <- readIORef sshRecvState
+       (payload, activeCipher') <- parseFrom client sshBuf
+                                 $ getSshPacket seqNum cipher activeCipher mac
        payload' <- comp payload
        msg <- either fail return $ runGetLazy getSshMsg payload'
        let !seqNum1 = seqNum + 1
-       writeIORef sshRecvState (seqNum1, cipher', mac, comp)
+       writeIORef sshRecvState (seqNum1, cipher, activeCipher', mac, comp)
        case msg of
          SshMsgIgnore _                      -> loop
          SshMsgDebug display m _ | display   -> do cLog client (filter (not . isControl)

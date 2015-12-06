@@ -1,3 +1,4 @@
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE RecordWildCards #-}
@@ -50,14 +51,14 @@ sshDhHash v_c v_s i_c i_s k_s e f k = runPut $
 
 -- | Given a way to render something, turn it into an ssh packet.
 putSshPacket ::
-  DRG gen => Word32 -> Cipher -> Mac -> gen -> L.ByteString -> (L.ByteString,Cipher,gen)
+  DRG gen => Word32 -> Cipher -> ActiveCipher -> Mac -> gen -> L.ByteString -> (L.ByteString,ActiveCipher,gen)
 
-putSshPacket seqNum Cipher{..} mac gen bytes
-  | mETM mac = (packet,Cipher{cipherState=st',..},gen')
+putSshPacket seqNum Cipher{randomizePadding,paddingSize} ActiveCipher{acCrypt} mac gen bytes
+  | mETM mac = (packet,st',gen')
   where
   packet = L.fromChunks [ lenBytes, encBody, sig ]
 
-  (st',encBody) = encrypt seqNum cipherState body
+  (st',encBody) = acCrypt seqNum body
   sig           = computeMac mac seqNum [lenBytes, encBody]
 
   lenBytes = runPut (putWord32be (fromIntegral payloadLen))
@@ -75,11 +76,11 @@ putSshPacket seqNum Cipher{..} mac gen bytes
     | otherwise        = (S.replicate paddingLen 0, gen)
 
 -- Original packet format (without ETM)
-putSshPacket seqNum Cipher{..} mac gen bytes = (packet,Cipher{cipherState=st',..},gen')
+putSshPacket seqNum Cipher{..} ActiveCipher{acCrypt} mac gen bytes = (packet,st',gen')
   where
   packet = L.fromChunks [ encBody, sig ]
 
-  (st',encBody) = encrypt seqNum cipherState body
+  (st',encBody) = acCrypt seqNum body
   sig           = computeMac mac seqNum [body]
 
   body = runPut $
@@ -117,8 +118,8 @@ getSshIdent  = label "SshIdent" $
 -- | Given a way to parse the payload of an ssh packet, do the required
 -- book-keeping surrounding the data.
 getSshPacket ::
-  Word32 -> Cipher -> Mac -> Get (S.ByteString,Cipher)
-getSshPacket seqNum Cipher{..} mac
+  Word32 -> Cipher -> ActiveCipher -> Mac -> Get (S.ByteString,ActiveCipher)
+getSshPacket seqNum _ ActiveCipher{acCrypt} mac
   | mETM mac = label "SshPacket" $
 
   do -- figure out packet size
@@ -133,22 +134,22 @@ getSshPacket seqNum Cipher{..} mac
        (fail "signature validation failed")
 
      -- compute payload
-     let (st', payload) = decrypt seqNum cipherState payload
+     let (st', payload) = acCrypt seqNum cipherText
      case runGet removePadding payload of
        Left e -> fail e
-       Right x -> return (x,Cipher{cipherState=st',..})
+       Right x -> return (x,st')
 
 -- Original packet format without ETM
-getSshPacket seqNum Cipher{..} mac = label "SshPacket" $
+getSshPacket seqNum Cipher{blockSize} ActiveCipher{acLength,acCrypt} mac = label "SshPacket" $
 
   do -- figure out packet size
      let blockLen = max blockSize 8
      firstBlock <- lookAhead (getBytes blockLen)
-     let payloadLen = getLength seqNum cipherState firstBlock
+     let payloadLen = acLength seqNum firstBlock
 
      -- compute payload
      cipherText <- getBytes (payloadLen + 4)
-     let (st',payload) = decrypt seqNum cipherState cipherText
+     let (st',payload) = acCrypt seqNum cipherText
 
      -- validate signature
      let computedSig = computeMac mac seqNum [payload]
@@ -158,7 +159,7 @@ getSshPacket seqNum Cipher{..} mac = label "SshPacket" $
 
      case runGet (skip 4 >> removePadding) payload of
        Left e -> fail e
-       Right x -> return (x,Cipher{cipherState=st',..})
+       Right x -> return (x,st')
 
 removePadding :: Get S.ByteString
 removePadding =
