@@ -19,7 +19,6 @@ import           Data.IORef
 import           Data.Word
 import           Data.Serialize
 import           Control.Concurrent
-import           Control.Exception
 import           Control.Monad
 import           Data.ByteString.Short (ShortByteString)
 import qualified Data.ByteString as S

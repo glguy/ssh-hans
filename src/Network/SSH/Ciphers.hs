@@ -221,18 +221,21 @@ mk_cipher_cbc (CipherName name)
         Just iv0                    = Cipher.makeIV (grab ivSize ckInitialIV)
         ivSize                      = Cipher.blockSize aesKey
 
-      enc (aesKey,iv) _ bytes = ((aesKey,iv'), cipherText)
-        where
-        cipherText = Cipher.cbcEncrypt aesKey iv bytes
-        Just iv' = Cipher.makeIV (S.drop (S.length bytes - 16) cipherText)
+      nextIV :: S.ByteString -> Cipher.IV cipher -> Cipher.IV cipher
+      nextIV bytes old
+        | S.null bytes = old
+        | otherwise = case Cipher.makeIV (S.drop (S.length bytes - 16) bytes) of
+                        Nothing -> error "nextIV: bad size"
+                        Just new -> new
 
-      dec :: (cipher, Cipher.IV cipher) -> Word32 -> S.ByteString -> ((cipher, Cipher.IV cipher), S.ByteString)
-      dec (aesKey,iv) _ cipherText = ((aesKey,iv'), bytes)
-        where
-        bytes = Cipher.cbcDecrypt aesKey iv cipherText
-        Just iv' = Cipher.makeIV
-                 $ S.drop (S.length cipherText - 16)
-                 $ cipherText
+      enc (aesKey,iv) _ bytes =
+        let cipherText = Cipher.cbcEncrypt aesKey iv bytes
+        in ((aesKey,nextIV cipherText iv), cipherText)
+
+      dec (aesKey,iv) _ cipherText =
+        ( (aesKey,nextIV cipherText iv)
+        , Cipher.cbcDecrypt aesKey iv cipherText)
+
   in Cipher
        { blockSize   = 16
        , randomizePadding = True
