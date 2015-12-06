@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -20,6 +21,9 @@ import           Data.Serialize
                      , getWord8, putWord8, putWord32be, getWord32be )
 import           Data.Word ( Word8, Word32 )
 
+#if !MIN_VERSION_base(4,8,0)
+import           Control.Applicative
+#endif
 
 -- Rendering -------------------------------------------------------------------
 

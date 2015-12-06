@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -5,7 +6,6 @@ module Network.SSH.Messages where
 
 import           Network.SSH.Protocol
 
-import           Control.Applicative ( (<$>), (<*>) )
 import           Data.ByteString.Short (ShortByteString)
 import qualified Data.ByteString.Char8 as S
 import           Data.Serialize
@@ -13,6 +13,10 @@ import           Data.Serialize
                      , putWord8, getWord8, getWord32be, putWord32be, runPut
                      , remaining )
 import           Data.Word ( Word32 )
+
+#if !MIN_VERSION_base(4,8,0)
+import           Control.Applicative ( (<$>), (<*>) )
+#endif
 
 {-
  Transport layer protocol:

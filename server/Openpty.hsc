@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
 
 #include <sys/ioctl.h>
@@ -6,7 +7,6 @@
 
 module Openpty where
 
-import Control.Applicative
 import System.Posix.Types (Fd(Fd))
 import Data.Word
 
@@ -14,6 +14,10 @@ import Foreign.C
 import Foreign.Ptr
 import Foreign.Marshal
 import Foreign.Storable
+
+#if !MIN_VERSION_base(4,8,0)
+import Control.Applicative
+#endif
 
 foreign import ccall unsafe "openpty"
   c_openpty :: Ptr CInt -> Ptr CInt -> CString -> Ptr Termios -> Ptr Winsize -> IO CInt

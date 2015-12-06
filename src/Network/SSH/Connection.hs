@@ -11,7 +11,6 @@ import Network.SSH.Rekey
 import Control.Concurrent
 import Control.Concurrent.STM
 import Control.Monad
-import Control.Applicative
 
 import Data.Word
 import qualified Data.Map as Map

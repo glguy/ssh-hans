@@ -14,7 +14,6 @@ import           Control.Monad (unless, guard)
 import           Data.ByteArray (constEq)
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Lazy as L
-import           Data.Char ( chr )
 import           Data.Word
 import           Data.Serialize
                      ( Get, runGet, runPut, label, remaining
