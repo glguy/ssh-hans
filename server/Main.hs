@@ -10,7 +10,7 @@ import           Network.SSH.Named
 import           Network.SSH.PubKey
 import           Network.SSH.PrivateKeyFormat
 
-import           Control.Monad ( void, forever, (<=<) )
+import           Control.Monad
 import           Control.Exception
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Short as Short
@@ -100,7 +100,7 @@ mkClient creds (h,_,_) = Client { .. }
                      writeBytes (Just out)
                  ) `finally` writeBytes Nothing
                    `catch` \e ->
-                        if isIllegalOperation e then return () else throwIO e
+                        unless (isIllegalOperation e) (throwIO e)
 
        void $ forkIO $
          let loop = do event <- readChan eventChannel
@@ -117,7 +117,7 @@ mkClient creds (h,_,_) = Client { .. }
 
        let config = Vty.Config
                       { Vty.vmin     = Just 1
-                      , Vty.vtime    = Just 100
+                      , Vty.vtime    = Just 0
                       , Vty.debugLog = Nothing
                       , Vty.inputMap = []
                       , Vty.inputFd  = Just slaveFd
@@ -163,6 +163,6 @@ echoServer chan write = loop
     do event <- readChan chan
        case event of
          SessionData xs -> write (Just xs) >> loop
-         SessionEof   -> return ()
+         SessionEof   -> write Nothing
          SessionClose -> return ()
          SessionWinsize{} -> loop
