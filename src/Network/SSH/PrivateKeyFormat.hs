@@ -2,10 +2,6 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-#if !MIN_VERSION_base(4,8,0)
-import Data.Traversable (traverse)
-#endif
-
 module Network.SSH.PrivateKeyFormat where
 
 import Control.Applicative
@@ -26,6 +22,10 @@ import qualified Crypto.PubKey.DSA as DSA
 import qualified Crypto.PubKey.Ed25519 as Ed25519
 import Crypto.Number.Basic (numBytes)
 import Crypto.Error
+
+#if !MIN_VERSION_base(4,8,0)
+import Data.Traversable (traverse)
+#endif
 
 data PrivateKeyFile = PrivateKeyFile
   { pkfCipherName :: S.ByteString
