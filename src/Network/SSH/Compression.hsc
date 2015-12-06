@@ -1,4 +1,5 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
+{-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE OverloadedStrings #-}
 module Network.SSH.Compression
   ( Compression(..)
@@ -12,6 +13,7 @@ module Network.SSH.Compression
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Lazy as L
 import qualified Data.ByteString.Unsafe as U
+import           Data.Typeable
 import           Control.Monad
 import           Control.Exception
 import           Foreign
@@ -43,7 +45,7 @@ compression_zlib = Named "zlib" (Compression mkZlibCompressor mkZlibDecompressor
 data ZStream
 
 -- | Returns values from zlib
-newtype ZError = ZError CInt deriving (Eq, Show)
+newtype ZError = ZError CInt deriving (Eq, Show, Typeable)
 instance Exception ZError
 #enum ZError, ZError, Z_OK, Z_BUF_ERROR
 
