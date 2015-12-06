@@ -1,5 +1,10 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE OverloadedStrings #-}
+
+#if !MIN_VERSION_base(4,8,0)
+import Data.Traversable (traverse)
+#endif
 
 module Network.SSH.PrivateKeyFormat where
 
