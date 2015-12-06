@@ -1,5 +1,6 @@
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Main where
 
@@ -30,6 +31,9 @@ import System.Directory (getHomeDirectory)
 import qualified SetGame
 import qualified Graphics.Vty as Vty
 
+#if !MIN_VERSION_base(4,8,0)
+import Control.Applicative
+#endif
 
 import Openpty
 import UnixTerminalFlags
