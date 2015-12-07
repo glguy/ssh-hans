@@ -475,7 +475,7 @@ roundUp ::
   Int {- ^ padding length  -}
 roundUp align bytesLen = paddingLen
   where
-  bytesRem   = (1 + bytesLen) `mod` align
+  bytesRem   = bytesLen `mod` align
 
   -- number of bytes needed to align on block size
   alignBytes | bytesRem == 0 = 0

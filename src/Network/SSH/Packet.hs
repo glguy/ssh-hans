@@ -53,45 +53,31 @@ sshDhHash v_c v_s i_c i_s k_s e f k = runPut $
 putSshPacket ::
   DRG gen => Word32 -> Cipher -> ActiveCipher -> Mac -> gen -> L.ByteString -> (L.ByteString,ActiveCipher,gen)
 
-putSshPacket seqNum Cipher{randomizePadding,paddingSize} ActiveCipher{acCrypt} mac gen bytes
-  | mETM mac = (packet,st',gen')
+putSshPacket seqNum Cipher{randomizePadding,paddingSize} ActiveCipher{acCrypt} mac gen bytes =
+  (L.fromChunks packetChunks, st', gen')
   where
-  packet = L.fromChunks [ lenBytes, encBody, sig ]
+  packetChunks
+    | mETM mac  = [ lenBytes, cipherText, tag ]
+    | otherwise = [           cipherText, tag ]
 
-  (st',encBody) = acCrypt seqNum body
-  sig           = computeMac mac seqNum [lenBytes, encBody]
+  lenBytes = runPut $ putWord32be $ fromIntegral
+           $ 1 + bytesLen + paddingLen
 
-  lenBytes = runPut (putWord32be (fromIntegral payloadLen))
+  tag = computeMac mac seqNum
+      $ if mETM mac
+        then [lenBytes, cipherText]
+        else [plainText]
 
-  body = runPut $
-    do putWord8 (fromIntegral paddingLen)
-       putLazyByteString bytes
-       putByteString padding
+  (st',cipherText) = acCrypt seqNum plainText
 
-  bytesLen = fromIntegral (L.length bytes)
-  paddingLen = paddingSize bytesLen
-  payloadLen = 1 + bytesLen + paddingLen
-  (padding, gen')
-    | randomizePadding = randomBytesGenerate paddingLen gen
-    | otherwise        = (S.replicate paddingLen 0, gen)
-
--- Original packet format (without ETM)
-putSshPacket seqNum Cipher{..} ActiveCipher{acCrypt} mac gen bytes = (packet,st',gen')
-  where
-  packet = L.fromChunks [ encBody, sig ]
-
-  (st',encBody) = acCrypt seqNum body
-  sig           = computeMac mac seqNum [body]
-
-  body = runPut $
-    do putWord32be (fromIntegral packetLen)
+  plainText = runPut $
+    do unless (mETM mac) (putByteString lenBytes)
        putWord8 (fromIntegral paddingLen)
        putLazyByteString bytes
        putByteString padding
 
   bytesLen = fromIntegral (L.length bytes)
-  paddingLen = paddingSize (4+bytesLen)
-  packetLen = 1 + bytesLen + paddingLen
+  paddingLen = paddingSize (bytesLen + if mETM mac then 1 else 5)
   (padding, gen')
     | randomizePadding = randomBytesGenerate paddingLen gen
     | otherwise        = (S.replicate paddingLen 0, gen)
