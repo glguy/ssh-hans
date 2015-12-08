@@ -8,6 +8,7 @@ import           Network.SSH.Protocol
 
 import           Data.ByteString.Short (ShortByteString)
 import qualified Data.ByteString.Char8 as S
+import           Data.ByteString.Lazy ()
 import           Data.Serialize
                      ( Get, Putter, Put, label, isolate, getBytes, putByteString
                      , putWord8, getWord8, getWord32be, putWord32be, runPut
@@ -566,8 +567,9 @@ getSshMsg  =
        SshMsgTagServiceAccept           -> SshMsgServiceAccept  <$> getSshService
        SshMsgTagKexInit                 -> SshMsgKexInit <$> getSshProposal
        SshMsgTagNewKeys                 -> return SshMsgNewKeys
-       SshMsgTagKexDhInit               -> SshMsgKexDhInit  <$> getRemaining
-       SshMsgTagKexDhReply              -> fail "unimplemented"
+       SshMsgTagKexDhInit               -> SshMsgKexDhInit  <$> getStringOrMpIntRaw
+       -- TODO(conathan): implement
+       SshMsgTagKexDhReply              -> SshMsgKexDhReply <$> getSshPubCert <*> getStringOrMpIntRaw <*> getSshSig
        SshMsgTagUserAuthRequest         -> getAuthRequest
        SshMsgTagUserAuthFailure         -> getUserAuthFailure
        SshMsgTagUserAuthSuccess         -> return SshMsgUserAuthSuccess
@@ -592,6 +594,20 @@ getSshMsg  =
        SshMsgTagChannelRequest          -> getChannelRequest
        SshMsgTagChannelSuccess          -> SshMsgChannelSuccess <$> getWord32be
        SshMsgTagChannelFailure          -> SshMsgChannelFailure <$> getWord32be
+  where
+    -- | Get the raw representation of a @string@ or @mpint@.
+    --
+    -- The DH init and reply messages can include @string@ or @mpint@,
+    -- but we don't want to worry about which at parse time.  So, we
+    -- parse type-agnostically here and let someone else call
+    -- 'getString' or 'getMpInt' as appropriate down the line.
+    --
+    -- The representation of @string@ and @mpint@ are four bytes
+    -- giving a length followed by length-many bytes of payload. The
+    -- payload bytes are uninterpreted, so parsing as @string@ works
+    -- for both @string@ and @mpint@.
+    getStringOrMpIntRaw :: Get S.ByteString
+    getStringOrMpIntRaw = runPut . putString <$> getString
 
 getSshDiscReason :: Get SshDiscReason
 getSshDiscReason  = label "SshDiscReason" $
