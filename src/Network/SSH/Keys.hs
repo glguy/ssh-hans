@@ -3,14 +3,14 @@
 -- | Key exchange and key generation
 module Network.SSH.Keys where
 
-import           Network.SSH.Protocol ( getString, getMpInt, putMpInt, putString )
+import           Network.SSH.Protocol ( putMpInt, i2os, os2i )
 import           Network.SSH.Named
 import           Network.SSH.Messages
 import           Network.SSH.PubKey
 
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Lazy as L
-import           Data.Serialize ( runGet, runPut )
+import           Data.Serialize
 
 import           Crypto.Number.Serialize
 import           Crypto.Random
@@ -87,6 +87,13 @@ data Kex = Kex
   , kexHash :: S.ByteString -> S.ByteString
   }
 
+-- Note that the public values are "raw" encodings while the secret
+-- value is not. A raw encoding is not prefixed with its length
+-- making it suitable for being parsed and rendered with getString.
+-- The secret value, however, is fully encoded because the secret
+-- key material is actually derived from the encoded version and
+-- the encoded version is never transmitted in a packet.
+
 allKex :: [ Named Kex ]
 allKex =
   [ diffieHellmanGroup1Sha1
@@ -140,19 +147,16 @@ runDh params =
 
   do priv <- DH.generatePrivate params
 
-     let serialize = runPut . putMpInt
+     let DH.PublicNumber pub_s = DH.calculatePublic params priv
 
-         DH.PublicNumber pub_s = DH.calculatePublic params priv
+         computeSecret raw_pub_c = Just (runPut (putMpInt shared))
+           where
+           DH.SharedKey shared = DH.getShared params priv
+                               $ DH.PublicNumber
+                               $ os2i raw_pub_c
 
-         computeSecret raw_pub_c
-           | Right pub_c <- runGet getMpInt raw_pub_c
-           , let DH.SharedKey shared = DH.getShared params priv
-                                          (DH.PublicNumber pub_c)
-           = Just (serialize shared)
 
-           | otherwise = Nothing
-
-     return (serialize pub_s, computeSecret)
+     return (i2os pub_s, computeSecret)
 
 
 -- |Group 2 from RFC 2409
@@ -176,13 +180,12 @@ runEcdh curve =
 
   do priv <- ECDH.generatePrivate curve
 
-     let serialize = runPut . putString . pointToBytes curve
+     let serialize = pointToBytes curve
 
          pub_s     = ECDH.calculatePublic curve priv
 
          computeSecret raw_pub_c
-           | Right raw_pub_c1   <- runGet getString raw_pub_c
-           , CryptoPassed pub_c <- pointFromBytes curve raw_pub_c1
+           | CryptoPassed pub_c <- pointFromBytes curve raw_pub_c
            , let ECDH.SharedKey shared = ECDH.getShared curve priv pub_c
            = Just (runPut (putMpInt shared))
 
@@ -211,15 +214,11 @@ runCurve25519dh =
                                (getRandomBytes 32 :: IO S.ByteString)
 
      -- Section 2: Transmit public key as "string"
-     let raw_pub_s  = runPut $ putString $ convert
-                    $ C25519.toPublic priv
+     let raw_pub_s  = convert $ C25519.toPublic priv
 
          computeSecret raw_pub_c
-             -- Section 2: Transmit public key as "string"
-           | Right pub_bytes_c <- runGet getString raw_pub_c
-
              -- fails if key isn't 32 bytes long
-           , CryptoPassed pub_c <- C25519.publicKey pub_bytes_c
+           | CryptoPassed pub_c <- C25519.publicKey raw_pub_c
 
              -- Section 4.3: Treat shared key bytes as "integer"
            = Just $ runPut $ putMpInt $ os2ip $ C25519.dh pub_c priv

@@ -4,13 +4,13 @@
 
 module Network.SSH.Protocol (
     getBoolean,  putBoolean
-  , getMpInt,    putMpInt
+  , getMpInt,    putMpInt, os2i, i2os
   , getUnsigned, putUnsigned
   , getString,   putString
   , getNameList, putNameList
   ) where
 
-import           Data.Bits ( shiftL, shiftR, testBit )
+import           Data.Bits ( shiftL, shiftR )
 import           Data.ByteString.Short (ShortByteString, fromShort, toShort)
 import qualified Data.ByteString.Short as Short
 import qualified Data.ByteString as S
@@ -20,6 +20,7 @@ import           Data.Serialize
                      ( Putter, Get, getBytes, putByteString
                      , getWord8, putWord8, putWord32be, getWord32be )
 import           Data.Word ( Word8, Word32 )
+import           Data.Int ( Int8 )
 
 #if !MIN_VERSION_base(4,8,0)
 import           Control.Applicative
@@ -36,6 +37,9 @@ putMpInt i =
   do let (len,bytes) = unpack i
      putWord32be len
      mapM_ putWord8 bytes
+
+i2os :: Integer -> S.ByteString
+i2os = S.pack . snd . unpack
 
 unpack :: Integer -> (Word32, [Word8])
 unpack 0 = (0,[])
@@ -81,18 +85,24 @@ getMpInt :: Get Integer
 getMpInt  =
   do numBytes <- getWord32be
      bytes    <- getBytes (fromIntegral numBytes)
-     return $! case S.uncons bytes of
-                 Nothing -> 0
-                 Just (msb,rest) -> S.foldl' aux msb' rest
-                   where
-                      aux acc b = acc`shiftL`8 + fromIntegral b
-                      msb' | testBit msb 7 = toInteger msb - 0x100
-                           | otherwise     = toInteger msb
+     return $! os2i bytes
+
+-- | Decode a 'ByteString' as a multi-precision, signed 'Integer'.
+-- The bytes are treated as a big-endian, twos-complement representation with
+-- the high-bit of the high-byte being a sign bit.
+os2i :: S.ByteString -> Integer
+os2i bs =
+  case S.uncons bs of
+    Nothing -> 0
+    Just (msb,rest) ->
+      let msb' = toInteger (fromIntegral msb :: Int8)
+      in S.foldl' shiftByte msb' rest
+
+shiftByte :: Integer -> Word8 -> Integer
+shiftByte acc b = acc`shiftL`8 + fromIntegral b
 
 getUnsigned :: Int -> Get Integer
-getUnsigned n = S.foldl' aux 0 <$> getBytes n
-  where
-  aux acc b = acc`shiftL`8 + fromIntegral b
+getUnsigned n = S.foldl' shiftByte 0 <$> getBytes n
 
 getNameList :: Get [ShortByteString]
 getNameList  =

@@ -45,9 +45,9 @@ sshDhHash v_c v_s i_c i_s k_s e f k = runPut $
      putString (runPut (putSshMsg (SshMsgKexInit i_c)))
      putString (runPut (putSshMsg (SshMsgKexInit i_s)))
      putString (runPut (putSshPubCert k_s))
-     putByteString e -- encoding varies
-     putByteString f -- encoding varies
-     putByteString k -- encoding varies
+     putString e
+     putString f
+     putByteString k -- raw encoding
 
 putSshIdent :: Putter SshIdent
 putSshIdent sshIdent =
