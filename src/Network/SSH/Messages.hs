@@ -475,6 +475,15 @@ putDhReply cert f sig =
      putByteString f -- encoding varies by algorithm
      putString (runPut (putSshSig sig))
 
+getDhReply :: Get SshMsg
+getDhReply =
+  do certLen <- getWord32be
+     cert    <- isolate (fromIntegral certLen) (label "dhreply.cert" getSshPubCert)
+     pub     <- label "dhreply.pub" getStringOrMpIntRaw
+     sigLen  <- getWord32be
+     sig     <- isolate (fromIntegral sigLen) (label "dhreply.sig" getSshSig)
+     return (SshMsgKexDhReply cert pub sig)
+
 putSshDiscReason :: Putter SshDiscReason
 putSshDiscReason r = putWord32be $! case r of
   SshDiscNoReason                    -> 0
@@ -569,7 +578,7 @@ getSshMsg  =
        SshMsgTagNewKeys                 -> return SshMsgNewKeys
        SshMsgTagKexDhInit               -> SshMsgKexDhInit  <$> getStringOrMpIntRaw
        -- TODO(conathan): implement
-       SshMsgTagKexDhReply              -> SshMsgKexDhReply <$> getSshPubCert <*> getStringOrMpIntRaw <*> getSshSig
+       SshMsgTagKexDhReply              -> getDhReply
        SshMsgTagUserAuthRequest         -> getAuthRequest
        SshMsgTagUserAuthFailure         -> getUserAuthFailure
        SshMsgTagUserAuthSuccess         -> return SshMsgUserAuthSuccess
@@ -594,20 +603,20 @@ getSshMsg  =
        SshMsgTagChannelRequest          -> getChannelRequest
        SshMsgTagChannelSuccess          -> SshMsgChannelSuccess <$> getWord32be
        SshMsgTagChannelFailure          -> SshMsgChannelFailure <$> getWord32be
-  where
-    -- | Get the raw representation of a @string@ or @mpint@.
-    --
-    -- The DH init and reply messages can include @string@ or @mpint@,
-    -- but we don't want to worry about which at parse time.  So, we
-    -- parse type-agnostically here and let someone else call
-    -- 'getString' or 'getMpInt' as appropriate down the line.
-    --
-    -- The representation of @string@ and @mpint@ are four bytes
-    -- giving a length followed by length-many bytes of payload. The
-    -- payload bytes are uninterpreted, so parsing as @string@ works
-    -- for both @string@ and @mpint@.
-    getStringOrMpIntRaw :: Get S.ByteString
-    getStringOrMpIntRaw = runPut . putString <$> getString
+
+-- | Get the raw representation of a @string@ or @mpint@.
+--
+-- The DH init and reply messages can include @string@ or @mpint@,
+-- but we don't want to worry about which at parse time.  So, we
+-- parse type-agnostically here and let someone else call
+-- 'getString' or 'getMpInt' as appropriate down the line.
+--
+-- The representation of @string@ and @mpint@ are four bytes
+-- giving a length followed by length-many bytes of payload. The
+-- payload bytes are uninterpreted, so parsing as @string@ works
+-- for both @string@ and @mpint@.
+getStringOrMpIntRaw :: Get S.ByteString
+getStringOrMpIntRaw = runPut . putString <$> getString
 
 getSshDiscReason :: Get SshDiscReason
 getSshDiscReason  = label "SshDiscReason" $
