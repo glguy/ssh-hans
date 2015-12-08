@@ -155,5 +155,5 @@ removePadding :: Get S.ByteString
 removePadding =
   do padLen <- fmap fromIntegral getWord8
      n      <- remaining
-     unless (4 <= padLen && padLen < n) (fail "bad padding length")
+     unless (4 <= padLen && padLen <= n) (fail "bad padding length")
      getBytes (n - padLen)
