@@ -15,9 +15,10 @@ import           Control.Monad (unless, guard)
 import           Data.ByteArray (constEq)
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Lazy as L
+import           Data.Monoid ((<>))
 import           Data.Word
 import           Data.Serialize
-                     ( Get, runGet, runPut, label, remaining
+                     ( Get, Putter, runGet, runPut, label, remaining
                      , lookAhead, skip, getBytes, getWord8, putWord8
                      , getWord32be, putWord32be, putByteString
                      , putLazyByteString )
@@ -48,6 +49,9 @@ sshDhHash v_c v_s i_c i_s k_s e f k = runPut $
      putByteString f -- encoding varies
      putByteString k -- encoding varies
 
+putSshIdent :: Putter SshIdent
+putSshIdent sshIdent =
+  putLazyByteString $ L.fromStrict (sshIdentString sshIdent <> "\r\n")
 
 -- | Given a way to render something, turn it into an ssh packet.
 putSshPacket ::

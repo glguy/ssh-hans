@@ -4,13 +4,14 @@
 module Tests.Messages where
 
 import Network.SSH.Ciphers
-import Network.SSH.Mac
 import Network.SSH.Messages
 import Network.SSH.Packet
+import Network.SSH.Protocol
 
 import           Control.Applicative ( (<$>), (<*>), pure )
 import qualified Data.ByteString.Char8 as S
-import qualified Data.ByteString.Lazy as L
+import           Data.ByteString.Short (ShortByteString)
+import           Data.Monoid ((<>))
 import           Data.Serialize ( Get, Putter, runGet, runPut )
 import           Test.Framework ( Test, testGroup )
 import           Test.Framework.Providers.QuickCheck2 ( testProperty )
@@ -24,7 +25,7 @@ messageTests :: [Test]
 messageTests  =
   [ testGroup "encode/decode"
       [ testProperty "SshIdent" $
-        encodeDecode gen_sshIdent putSshIdent getSshIdent
+        encodeDecode genSshIdent putSshIdent getSshIdent
 
       , testProperty "SshPubCert" $
         encodeDecode genSshPubCert putSshPubCert getSshPubCert
@@ -44,6 +45,7 @@ encodeDecode gen render parse = forAll gen $ \ a ->
     Right a' -> a === a'
     Left err -> counterexample err False
 
+{-
 encodeDecodePacket :: (Show a, Eq a) => String -> Gen a -> Putter a -> Get a -> Test
 encodeDecodePacket name gen render parse =
   testGroup name
@@ -72,6 +74,7 @@ encodeDecodePacket name gen render parse =
             Right (a',_,_) -> a === a'
             Left err       -> counterexample err False
     ]
+-}
 
 ascii :: Gen Char
 ascii  = elements $ concat [ [ 'a' .. 'z' ]
@@ -79,17 +82,20 @@ ascii  = elements $ concat [ [ 'a' .. 'z' ]
                            , [ '0' .. '9' ]
                            , [ '.', '_'   ] ]
 
-gen_sshIdent :: Gen SshIdent
-gen_sshIdent  =
-  do let sshProtoVersion = "2.0"
-     sshSoftwareVersion <- S.pack `fmap` listOf1 ascii
-     sshComments        <- S.pack `fmap` listOf ascii
+genSshIdent :: Gen SshIdent
+genSshIdent  =
+  do versionSuffix <- S.pack `fmap` listOf1 ascii
+     comment       <- S.pack `fmap` listOf ascii
+     -- Comments are optional in SSH version strings, but most be
+     -- preceded by space if present.
+     let comment' = if S.null comment then "" else " " <> comment
+     let sshIdentString = "SSH-2.0-" <> versionSuffix <> comment'
      return SshIdent { .. }
 
-kexAlgs :: [S.ByteString]
+kexAlgs :: NameList
 kexAlgs  = [ "diffie-hellman-group1-sha1", "diffie-hellman-group14-sha1" ]
 
-pubKeyAlgs :: [S.ByteString]
+pubKeyAlgs :: NameList
 pubKeyAlgs  = [ "ssh-dss"
               , "ssh-rsa"
               , "pgp-sign-rsa"
@@ -97,7 +103,7 @@ pubKeyAlgs  = [ "ssh-dss"
               ]
 
 
-encAlgs :: [S.ByteString]
+encAlgs :: NameList
 encAlgs  = [ "3des-cbc"
            , "blowfish-cbc"
            , "twofish256-cbc"
@@ -116,7 +122,7 @@ encAlgs  = [ "3des-cbc"
            , "none"
            ]
 
-macAlgs :: [S.ByteString]
+macAlgs :: NameList
 macAlgs  = [ "hmac-sha1"
            , "hmac-sha1-96"
            , "hmac-md5"
@@ -124,10 +130,12 @@ macAlgs  = [ "hmac-sha1"
            , "none"
            ]
 
-compAlgs :: [S.ByteString]
+compAlgs :: NameList
 compAlgs  = [ "none", "zlib" ]
 
-genSshAlgs :: Gen S.ByteString -> Gen SshAlgs
+type Name = ShortByteString
+
+genSshAlgs :: Gen Name -> Gen SshAlgs
 genSshAlgs gen_name = SshAlgs <$> listOf gen_name <*> listOf gen_name
 
 genSshDiscReason :: Gen SshDiscReason
@@ -178,11 +186,11 @@ genSshMsg  =
 
         ,    return SshMsgNewKeys
 
-        , do e <- arbitrary
+        , do e <- genEncodedString
              return (SshMsgKexDhInit e)
 
         , do cert <- genSshPubCert
-             f    <- arbitrary
+             f    <- genEncodedString
              sig  <- genSshSig
              return (SshMsgKexDhReply cert f sig)
 
@@ -206,17 +214,17 @@ genSshMsg  =
         -- , SshMsgChannelFailure
         ]
 
-genSshKeyExchange :: Gen SshKex
+genSshKeyExchange :: Gen SshProposal
 genSshKeyExchange  =
-  do sshCookie <- (SshCookie . S.pack) `fmap` vectorOf 16 arbitrary
-     sshKexAlgs <- listOf (elements kexAlgs)
+  do sshProposalCookie    <- (SshCookie . S.pack) `fmap` vectorOf 16 arbitrary
+     sshKexAlgs           <- listOf (elements kexAlgs)
      sshServerHostKeyAlgs <- listOf (elements pubKeyAlgs)
      sshEncAlgs  <- genSshAlgs (elements encAlgs)
      sshMacAlgs  <- genSshAlgs (elements macAlgs)
      sshCompAlgs <- genSshAlgs (elements compAlgs)
      let sshLanguages         = SshAlgs [] []
      sshFirstKexFollows <- arbitrary
-     return SshKex { .. }
+     return SshProposal { .. }
 
 genSshPubCert :: Gen SshPubCert
 genSshPubCert  =
@@ -257,6 +265,10 @@ genSshService  =
              pure (SshServiceOther (S.pack name))
         ]
 
+genEncodedString :: Gen S.ByteString
+genEncodedString = runPut . putString . S.pack <$> listOf arbitrary
+
+{-
 -- | Generate an aes128-cbc cipher pair.
 genCipher :: Gen (Cipher,Cipher)
 genCipher  =
@@ -268,3 +280,4 @@ genMac :: Gen Mac
 genMac  =
   do k <- L.pack `fmap` vectorOf 32 arbitrary
      return (mac_hmac_sha1 k)
+-}

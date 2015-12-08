@@ -90,10 +90,10 @@ test-suite umac
                        ssh-hans
 
 test-suite tests
-  buildable:           False
   type:                exitcode-stdio-1.0
   main-is:             Main.hs
-  other-modules:       Tests.Messages
+  other-modules:       Tests.Messages,
+                       Tests.Packet
   hs-source-dirs:      tests
   build-depends:       base >= 4.7 && < 5,
                        bytestring,

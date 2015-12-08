@@ -8,7 +8,9 @@ module Network.SSH.Ciphers (
     Cipher(..)
   , ActiveCipher(..)
   , activateCipherE
+  , activateCipherE_none
   , activateCipherD
+  , activateCipherD_none
 
   , allCipher
 
@@ -92,6 +94,12 @@ activateCipherD keys Cipher{decrypt,getLength,cipherState} = aux (cipherState ke
     , acCrypt  = \seqNr input -> case decrypt st seqNr input of
                                    (st', output) -> (aux st', output)
     }
+
+activateCipherE_none :: ActiveCipher
+activateCipherE_none = activateCipherE nullKeys (namedThing cipher_none)
+
+activateCipherD_none :: ActiveCipher
+activateCipherD_none = activateCipherD nullKeys (namedThing cipher_none)
 
 allCipher :: [ Named Cipher ]
 allCipher =

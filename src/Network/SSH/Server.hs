@@ -23,9 +23,8 @@ import           Control.Concurrent
 import           Control.Monad (forever)
 import qualified Control.Exception as X
 import qualified Data.ByteString.Char8 as S
-import qualified Data.ByteString.Lazy as L
-import           Data.Monoid ((<>))
 import           Data.IORef (writeIORef, readIORef)
+import           Data.Serialize (runPutLazy)
 
 -- Public API ------------------------------------------------------------------
 
@@ -64,7 +63,7 @@ sshServer sock = forever $
 -- | Exchange identification information
 sayHello :: SshState -> Client -> SshIdent -> IO SshIdent
 sayHello state client v_s =
-  do cPut client (L.fromStrict (sshIdentString v_s <> "\r\n"))
+  do cPut client (runPutLazy $ putSshIdent v_s)
      -- parseFrom used because ident doesn't use the normal framing
      parseFrom client (sshBuf state) getSshIdent
 
