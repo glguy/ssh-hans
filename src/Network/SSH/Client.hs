@@ -2,15 +2,13 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 
-module Network.SSH.Server (
-
-    Server(..)
-  , ServerCredential
+module Network.SSH.Client (
+    ServerCredential
   , Client(..)
+  , ClientState(..)
   , SessionEvent(..)
   , AuthResult(..)
-  , sshServer
-
+  , sshClient
   ) where
 
 import           Network.SSH.Connection
@@ -20,56 +18,74 @@ import           Network.SSH.Rekey
 import           Network.SSH.State
 
 import           Control.Concurrent
-import           Control.Monad (forever)
 import qualified Control.Exception as X
+import           Control.Monad ( forever, when )
 import qualified Data.ByteString.Char8 as S
-import           Data.IORef (writeIORef, readIORef)
-import           Data.Serialize (runPutLazy)
+import qualified Data.ByteString.Lazy as L
+import           Data.IORef ( writeIORef, readIORef )
+import           Data.Monoid ( (<>) )
+import           Data.Serialize ( runPutLazy )
+import           System.Exit ( die )
 
 -- Public API ------------------------------------------------------------------
 
+{-
 data Server = Server
   { sAccept :: IO Client
   , sAuthenticationAlgs :: [ServerCredential]
   , sIdent :: SshIdent
   }
+-}
 
-sshServer :: Server -> IO ()
-sshServer sock = forever $
-  do client <- sAccept sock
+debug s = putStrLn $ "debug: " ++ s
 
-     forkIO $
-       do state <- initialState ServerRole (sAuthenticationAlgs sock)
-          let v_s = sIdent sock
-          v_c <- sayHello state client v_s
-          writeIORef (sshIdents state) (v_s,v_c)
-          initialKeyExchange client state
+data ClientState = ClientState
+  { csIdent  :: SshIdent
+  , csNet    :: Client
+  }
 
-          -- Connection established!
+sshClient :: ClientState -> IO ()
+sshClient clientSt = do
+  -- The '[]' is "server credentials", i.e. server private keys; we
+  -- might want client keys here?
+  state <- initialState ClientRole []
+  let v_c = csIdent clientSt
+  let client = csNet clientSt
+  v_s <- sayHello state client v_c
+  debug $ "server version: " ++ show v_s
+  writeIORef (sshIdents state) (v_s,v_c)
 
-          result <- handleAuthentication state client
-          case result of
-            Nothing -> send client state
-                         (SshMsgDisconnect SshDiscNoMoreAuthMethodsAvailable
-                                            "" "")
-            Just (_user,svc) ->
-              case svc of
-                SshConnection -> startConnectionService client state
-                _             -> return ()
+  debug "starting key exchange ..."
+  initialKeyExchange_c client state
+  debug "key exchange done!"
 
-       `X.finally` (do
-         putStrLn "debug: sshServer: caught exception, closing client..."
-         cClose client)
+  debug "starting auth ..."
+  authenticate state client
+  debug "auth done!"
 
-
+-- TODO(conathan): factor out: duplicated from Network.ssh.server.
 -- | Exchange identification information
 sayHello :: SshState -> Client -> SshIdent -> IO SshIdent
-sayHello state client v_s =
-  do cPut client (runPutLazy $ putSshIdent v_s)
+sayHello state client v_c =
+  do cPut client (runPutLazy $ putSshIdent v_c)
      -- parseFrom used because ident doesn't use the normal framing
      parseFrom client (sshBuf state) getSshIdent
 
+authenticate :: SshState -> Client -> IO ()
+authenticate state client = do
+  debug "requesting ssh-userauth service from server ..."
+  send client state (SshMsgServiceRequest SshUserAuth)
+  SshMsgServiceAccept service <-
+    receiveSpecific SshMsgTagServiceAccept client state
+  when (service /= SshUserAuth) $
+    send client state $
+      SshMsgDisconnect SshDiscProtocolError
+        "unexpected service, expected 'ssh-userauth'!" ""
+  debug "server accepted ssh-userauth service request!"
+  
+  die "TODO(conathan): authenticate using password or publickey"
 
+{-
 handleAuthentication ::
   SshState -> Client -> IO (Maybe (S.ByteString, SshService))
 handleAuthentication state client =
@@ -115,3 +131,4 @@ handleAuthentication state client =
                 _ -> notAvailable >> return Nothing
 
        _ -> notAvailable >> return Nothing
+-}

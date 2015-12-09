@@ -55,6 +55,12 @@ pointToBytes curve (ECC.Point x y) =
 curveSizeBytes :: ECC.Curve -> Int
 curveSizeBytes = numBytes . ECC.ecc_n . ECC.common_curve
 
+-- | Sign session ID (in server) using server private key.
+--
+-- RFC 4253 Section 8 Step 2.
+--
+-- TODO(conathan): refactor to take 'token' directly, so that client
+-- can use this to sign. then docs i added will no longer make sense.
 sign :: PrivateKey -> SshSessionId -> IO SshSig
 sign pk (SshSessionId token) =
   case pk of
@@ -81,6 +87,14 @@ sign pk (SshSessionId token) =
     PrivateEcdsa521 priv ->
       SshSigEcDsaP521 . eccSigToBinary <$> ECDSA.sign priv Hash.SHA512 token
 
+-- | Verify server signature (in client) using server public key.
+--
+-- RFC 4253 Section 8 Step 3.
+verifyServerSig :: SshPubCert -> SshSig -> SshSessionId -> Bool
+verifyServerSig publicKey sig (SshSessionId token) = verify publicKey sig token
+
+-- TODO(conathan): factor out the construction of the client signature
+-- (the 'token') for reuse in the client.
 verifyPubKeyAuthentication ::
   SshSessionId {- ^ session ID           -} ->
   S.ByteString {- ^ username             -} ->
@@ -91,39 +105,7 @@ verifyPubKeyAuthentication ::
   Bool
 verifyPubKeyAuthentication
   sessionId username service publicKeyAlgorithm publicKey signature =
-    case (publicKeyAlgorithm, publicKey, signature) of
-
-      ("ssh-rsa", SshPubRsa e n, SshSigRsa s) ->
-        RSA.verify (Just Hash.SHA1) (RSA.PublicKey (numBytes n) n e) token s
-
-      ("ssh-dss", SshPubDss p q g y, SshSigDss r s) ->
-        let params = DSA.Params { DSA.params_p = p
-                                , DSA.params_q = q
-                                , DSA.params_g = g }
-            pub = DSA.PublicKey { DSA.public_params = params
-                                , DSA.public_y = y }
-            sig = DSA.Signature { DSA.sign_r = r
-                                , DSA.sign_s = s }
-         in DSA.verify Hash.SHA1 pub sig token
-
-      ("ecdsa-sha2-nistp256", SshPubEcDsaP256 pub, SshSigEcDsaP256 sig) ->
-           ecdsaAuth ECC.SEC_p256r1 Hash.SHA256 pub sig token
-
-      ("ecdsa-sha2-nistp384", SshPubEcDsaP384 pub, SshSigEcDsaP384 sig) ->
-           ecdsaAuth ECC.SEC_p384r1 Hash.SHA384 pub sig token
-
-      ("ecdsa-sha2-nistp521", SshPubEcDsaP521 pub, SshSigEcDsaP521 sig) ->
-           ecdsaAuth ECC.SEC_p521r1 Hash.SHA512 pub sig token
-
-      ("ssh-ed25519", SshPubEd25519 pub, SshSigEd25519 sig) ->
-        do p <- Ed25519.publicKey pub
-           s <- Ed25519.signature sig
-           return (Ed25519.verify p token s)
-        `catchCryptoFailure` \_ ->
-           False
-
-      _ -> False
-
+    verify publicKey signature token
   where
   token = runPut $
     do putSessionId  sessionId
@@ -134,6 +116,45 @@ verifyPubKeyAuthentication
        putBoolean    True
        putString     publicKeyAlgorithm
        putString     (runPut (putSshPubCert publicKey))
+
+-- | Verify a signature.
+verify :: SshPubCert -> SshSig -> S.ByteString -> Bool
+verify publicKey signature token =
+    case (publicKey, signature) of
+      -- "ssh-rsa"
+      (SshPubRsa e n, SshSigRsa s) ->
+        RSA.verify (Just Hash.SHA1) (RSA.PublicKey (numBytes n) n e) token s
+      -- "ssh-dss"
+      (SshPubDss p q g y, SshSigDss r s) ->
+        let params = DSA.Params { DSA.params_p = p
+                                , DSA.params_q = q
+                                , DSA.params_g = g }
+            pub = DSA.PublicKey { DSA.public_params = params
+                                , DSA.public_y = y }
+            sig = DSA.Signature { DSA.sign_r = r
+                                , DSA.sign_s = s }
+         in DSA.verify Hash.SHA1 pub sig token
+      -- "ecdsa-sha2-nistp256"
+      (SshPubEcDsaP256 pub, SshSigEcDsaP256 sig) ->
+           ecdsaAuth ECC.SEC_p256r1 Hash.SHA256 pub sig token
+      -- "ecdsa-sha2-nistp384"
+      (SshPubEcDsaP384 pub, SshSigEcDsaP384 sig) ->
+           ecdsaAuth ECC.SEC_p384r1 Hash.SHA384 pub sig token
+      -- "ecdsa-sha2-nistp521"
+      (SshPubEcDsaP521 pub, SshSigEcDsaP521 sig) ->
+           ecdsaAuth ECC.SEC_p521r1 Hash.SHA512 pub sig token
+      -- "ssh-ed25519"
+      (SshPubEd25519 pub, SshSigEd25519 sig) ->
+        do p <- Ed25519.publicKey pub
+           s <- Ed25519.signature sig
+           return (Ed25519.verify p token s)
+        `catchCryptoFailure` \_ ->
+           False
+
+      _ -> error "verify: bad key/signature combo!"
+                 -- Probably better to fail loud here warning that
+                 -- cert and sig are incompatible. Could put this in
+                 -- 'IO' and use 'fail'.
 
 ecdsaAuth ::
   Hash.HashAlgorithm h =>

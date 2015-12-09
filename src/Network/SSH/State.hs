@@ -40,6 +40,13 @@ data SessionEvent
   | SessionEof
   | SessionWinsize SshWindowSize
 
+-- TODO(conathan): rename, e.g 'ClientState', since we are adding
+-- client support. Or maybe, refactor this into client specific state
+-- (if any; the 'cOpenShell' may be client only) and general "other
+-- end of the connection state". From this symmetric point of view, it
+-- might make sense to call the other end the client, but that could
+-- be confusing since we also define client and server modules. Better
+-- to call it something else ...
 data Client = Client
   -- | Read up to 'n' bytes from network socket
   { cGet         :: Int -> IO S.ByteString
@@ -79,30 +86,56 @@ data Client = Client
   }
 
 
+data Role = ClientRole | ServerRole
+  deriving (Eq,Show)
+
+-- | Select our value from client and server values according to 'Role'.
+--
+-- Mnemonic: argument order is the same as the function name: client
+-- and then server.
+clientAndServer2us ::
+  Role -> a {- ^ client value -} -> a {- ^ server value -} -> a
+clientAndServer2us ClientRole c _ = c
+clientAndServer2us ServerRole _ s = s
+
+usAndThem2c ::
+  Role -> a {- ^ our value -} -> a {- ^ their value -} -> a
+usAndThem2c ClientRole us _   = us
+usAndThem2c ServerRole _ them = them
+
+usAndThem2s ::
+  Role -> a {- ^ our value -} -> a {- ^ their value -} -> a
+usAndThem2s ClientRole _ them = them
+usAndThem2s ServerRole us _   = us
+
+
 type CompressFun = S.ByteString -> IO L.ByteString
+type DecompressFun = CompressFun
 
 data SshState = SshState
-  { sshRecvState :: !(IORef (Word32, Cipher, ActiveCipher, Mac, CompressFun)) -- ^ Client context
+  { sshRecvState :: !(IORef (Word32, Cipher, ActiveCipher, Mac, DecompressFun)) -- ^ Client context
   , sshBuf       :: !(IORef S.ByteString)
   , sshSendState :: !(MVar (Word32, Cipher, ActiveCipher, Mac, CompressFun, ChaChaDRG)) -- ^ Server encryption context
   , sshSessionId :: !(IORef (Maybe SshSessionId))
   , sshAuthMethods :: [ServerCredential]
   , sshIdents :: !(IORef (SshIdent, SshIdent)) -- server, client
+  , sshRole :: Role
   }
 
 type ServerCredential = Named (SshPubCert, PrivateKey)
 
-
-initialState :: [ServerCredential] -> IO SshState
-initialState creds =
+-- TODO(conathan): factor out server credentials since they don't make
+-- sense in the client.
+initialState :: Role -> [ServerCredential] -> IO SshState
+initialState sshRole creds =
   do drg          <- drgNew
      let none = namedThing cipher_none
      sshRecvState <- newIORef (0,none
-                                ,activateCipherD nullKeys none
+                                ,activateCipherD_none
                                 ,namedThing mac_none ""
                                 ,return . L.fromStrict) -- no decompression
      sshSendState <- newMVar  (0,none
-                                ,activateCipherE nullKeys none
+                                ,activateCipherE_none
                                 ,namedThing mac_none ""
                                 ,return . L.fromStrict -- no compression
                                 ,drg)
@@ -124,26 +157,35 @@ send client SshState { .. } msg =
        cPut client pkt
        return (seqNum+1, cipher, activeCipher',mac, comp, gen')
 
+-- | Like 'receive', but fail when receiving an unexpected msg.
+receiveSpecific :: SshMsgTag -> Client -> SshState -> IO SshMsg
+receiveSpecific tag client sshState = do
+  msg <- receive client sshState
+  if sshMsgTag msg == tag
+  then return msg
+  else fail $ "unexpected msg of type" ++ show (sshMsgTag msg)
 
 receive :: Client -> SshState -> IO SshMsg
 receive client SshState { .. } = loop
   where
   loop =
-    do (seqNum, cipher, activeCipher, mac, comp) <- readIORef sshRecvState
+    do (seqNum, cipher, activeCipher, mac, decomp) <- readIORef sshRecvState
        (payload, activeCipher') <- parseFrom client sshBuf
                                  $ getSshPacket seqNum cipher activeCipher mac
-       payload' <- comp payload
+       payload' <- decomp payload
        msg <- either fail return $ runGetLazy getSshMsg payload'
        let !seqNum1 = seqNum + 1
-       writeIORef sshRecvState (seqNum1, cipher, activeCipher', mac, comp)
+       writeIORef sshRecvState (seqNum1, cipher, activeCipher', mac, decomp)
        case msg of
          SshMsgIgnore _                      -> loop
          SshMsgDebug display m _ | display   -> do cLog client (filter (not . isControl)
                                                                        (S8.unpack m))
                                                    loop -- XXX drop controls
                                  | otherwise -> loop
+         SshMsgDisconnect reason msg _lang   ->
+           fail $ "other end disconnected: " ++ show reason ++ ": " ++
+                  S8.unpack msg
          _                                   -> return msg
-
 
 parseFrom :: Client -> IORef S.ByteString -> Get a -> IO a
 parseFrom handle buffer body =
@@ -153,6 +195,9 @@ parseFrom handle buffer body =
   where
   -- boolean: beginning of packet
   go beginning (Partial k) =
+       -- If the connection gets closed the handle will still be open
+       -- -- i.e. 'hIsClosed' will return false -- but reads on the
+       -- handle will return the empty string.
     do bytes <- cGet handle 32752
        when (beginning && S.null bytes) (fail "Connection closed")
        go False (k bytes)
