@@ -55,14 +55,11 @@ pointToBytes curve (ECC.Point x y) =
 curveSizeBytes :: ECC.Curve -> Int
 curveSizeBytes = numBytes . ECC.ecc_n . ECC.common_curve
 
--- | Sign session ID (in server) using server private key.
---
--- RFC 4253 Section 8 Step 2.
---
--- TODO(conathan): refactor to take 'token' directly, so that client
--- can use this to sign. then docs i added will no longer make sense.
-sign :: PrivateKey -> SshSessionId -> IO SshSig
-sign pk (SshSessionId token) =
+signSessionId :: PrivateKey -> SshSessionId -> IO SshSig
+signSessionId pk (SshSessionId token) = sign pk token
+
+sign :: PrivateKey -> S.ByteString -> IO SshSig
+sign pk token =
   case pk of
 
     PrivateRsa priv ->
@@ -107,7 +104,22 @@ verifyPubKeyAuthentication
   sessionId username service publicKeyAlgorithm publicKey signature =
     verify publicKey signature token
   where
-  token = runPut $
+  token = pubKeyAuthenticationToken
+    sessionId username service publicKeyAlgorithm publicKey
+
+-- | The data that is signed to produce the pubkey auth sig.
+--
+-- RFC 4252 Section 7.
+pubKeyAuthenticationToken ::
+  SshSessionId {- ^ session ID           -} ->
+  S.ByteString {- ^ username             -} ->
+  SshService   {- ^ initial service      -} ->
+  S.ByteString {- ^ public key algorithm -} ->
+  SshPubCert   {- ^ public key           -} ->
+  S.ByteString
+pubKeyAuthenticationToken
+  sessionId username service publicKeyAlgorithm publicKey =
+    runPut $
     do putSessionId  sessionId
        putSshMsgTag  SshMsgTagUserAuthRequest
        putString     username

@@ -95,7 +95,7 @@ rekeyConnection_s client state i_s i_c =
      -- the session id doesn't change on rekeying
      modifyIORef' (sshSessionId state) (<|> Just sid)
 
-     sig <- sign (suite_host_priv suite) sid
+     sig <- signSessionId (suite_host_priv suite) sid
      send client state (SshMsgKexDhReply (suite_host_pub suite) pub_s sig)
 
      installSecurity client state suite sid k

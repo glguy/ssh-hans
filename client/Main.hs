@@ -57,7 +57,7 @@ main :: IO ()
 main = withSocketsDo $ do
   args <- getArgs
   when ("-h" `elem` args || "--help" `elem` args ||
-        not (length args `elem` [2,3])) $
+        not (length args `elem` [3,4])) $
     die . unlines $
       [ "usage: client USER SERVER_ADDR SERVER_PORT [PRIVATE_KEY]"
       , ""
@@ -66,6 +66,9 @@ main = withSocketsDo $ do
       ]
   let (user:host:portStr:rest) = args
   let port                     = fromInteger $ read portStr
+  keys <- case rest of
+    [file] -> loadPrivateKeys file
+    _      -> return []
 
   let prompt = user ++ "@" ++ host ++ "'s password: "
   let getPw  = S8.pack <$> getPassword prompt
@@ -79,16 +82,19 @@ main = withSocketsDo $ do
      let creds = [(S8.pack user,pubKeys)]
 -}
      -- sshServer (mkServer sAuth creds sock)
-  sshClient (mkClientState handle user getPw)
+  sshClient (mkClientState handle user getPw keys)
 
 
-mkClientState :: Handle -> String -> IO S.ByteString -> ClientState
-mkClientState handle user getPw = ClientState{..}
+mkClientState ::
+  Handle -> String -> IO S.ByteString -> [Named (SshPubCert,PrivateKey)] ->
+  ClientState
+mkClientState handle user getPw keys = ClientState{..}
   where
   csIdent = greeting
   csNet   = mkClient handle
   csUser  = S8.pack user
   csGetPw = getPw
+  csKeys  = keys
 
 greeting :: SshIdent
 greeting  = SshIdent "SSH-2.0-SSH_HaLVM_2.0_Client"

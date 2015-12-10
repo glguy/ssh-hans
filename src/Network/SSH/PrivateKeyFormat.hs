@@ -4,27 +4,30 @@
 
 module Network.SSH.PrivateKeyFormat where
 
-import Control.Applicative
-import Control.Monad
+import           Network.SSH.Messages
+import           Network.SSH.Named
+import           Network.SSH.Protocol
+import           Network.SSH.PubKey
+
+import           Control.Applicative
+import           Control.Monad
+import           Crypto.Error
+import           Crypto.Number.Basic (numBytes)
+import qualified Crypto.PubKey.DSA as DSA
+import qualified Crypto.PubKey.ECC.ECDSA as ECDSA
+import qualified Crypto.PubKey.ECC.Types as ECC
+import qualified Crypto.PubKey.Ed25519 as Ed25519
+import qualified Crypto.PubKey.RSA as RSA
+import           Data.ByteArray.Encoding
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Char8 as S8
-import Data.Serialize
-import Data.ByteArray.Encoding
-import Data.Word
-import Data.Foldable (traverse_)
-import Network.SSH.PubKey
-import Network.SSH.Protocol
-import Network.SSH.Messages
-import qualified Crypto.PubKey.ECC.Types as ECC
-import qualified Crypto.PubKey.ECC.ECDSA as ECDSA
-import qualified Crypto.PubKey.RSA as RSA
-import qualified Crypto.PubKey.DSA as DSA
-import qualified Crypto.PubKey.Ed25519 as Ed25519
-import Crypto.Number.Basic (numBytes)
-import Crypto.Error
+import qualified Data.ByteString.Short as Short
+import           Data.Foldable (traverse_)
+import           Data.Serialize
+import           Data.Word
 
 #if !MIN_VERSION_base(4,8,0)
-import Data.Traversable (traverse)
+import           Data.Traversable (traverse)
 #endif
 
 data PrivateKeyFile = PrivateKeyFile
@@ -49,6 +52,19 @@ armorHeader = "-----BEGIN OPENSSH PRIVATE KEY-----"
 
 armorFooter :: S.ByteString
 armorFooter = "-----END OPENSSH PRIVATE KEY-----"
+
+-- | Load private keys from file.
+--
+-- The keys file must be in OpenSSH format; see @:/server/README.md@.
+loadPrivateKeys :: FilePath -> IO [Named (SshPubCert, PrivateKey)]
+loadPrivateKeys path =
+  do res <- (extractPK <=< parsePrivateKeyFile) <$> S.readFile path
+     case res of
+       Left e -> fail ("Error loading server keys: " ++ e)
+       Right pk -> return
+                     [ Named (Short.toShort (sshPubCertName pub)) (pub, priv)
+                     | (pub,priv,_comment) <- pk
+                     ]
 
 getPrivateKeyFile :: Get PrivateKeyFile
 getPrivateKeyFile =

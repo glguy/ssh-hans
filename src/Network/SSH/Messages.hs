@@ -402,6 +402,9 @@ putSshProposal SshProposal{ .. } =
      -- RESERVED
      putWord32be 0
 
+-- TODO(conathan): make @putString . runPut@ part of the definition
+-- here, instead of duplicating it everywhere, and confusing me when I
+-- forget to add it. And similar for 'putSshSig'.
 putSshPubCert :: Putter SshPubCert
 
 putSshPubCert (SshPubDss p q g y) =
@@ -524,7 +527,13 @@ putUserAuthRequest user service method =
      putAuthMethod method
 
 putAuthMethod :: Putter SshAuthMethod
-putAuthMethod (SshAuthPublicKey {})              = fail "putAuthMethod: unimplemented"
+putAuthMethod (SshAuthPublicKey pubKeyAlg pubKey maybeSig) =
+  do putString "publickey"
+     putBoolean (isJust maybeSig)
+     putString pubKeyAlg
+     putString (runPut (putSshPubCert pubKey))
+     when (isJust maybeSig) $
+       putString (runPut (putSshSig (fromJust maybeSig)))
 putAuthMethod (SshAuthPassword oldPw maybeNewPw) =
   do putString "password"
      putBoolean (isJust maybeNewPw)

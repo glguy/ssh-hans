@@ -42,7 +42,7 @@ import LoadKeys
 main :: IO ()
 main = withSocketsDo $
   do sock    <- listenOn (PortNumber 2200)
-     sAuth   <- loadServerKeys "server_keys"
+     sAuth   <- loadPrivateKeys "server_keys"
 
      home    <- getHomeDirectory
      pubKeys <- loadPublicKeys (home </> ".ssh" </> "authorized_keys")
@@ -149,16 +149,6 @@ mkClient creds (h,_,_) = Client { .. }
 
   cAuthHandler _session_id _user _svc _m =
        return (AuthFailed ["password","publickey"])
-
-loadServerKeys :: FilePath -> IO [ServerCredential]
-loadServerKeys path =
-  do res <- (extractPK <=< parsePrivateKeyFile) <$> S.readFile path
-     case res of
-       Left e -> fail ("Error loading server keys: " ++ e)
-       Right pk -> return
-                     [ Named (Short.toShort (sshPubCertName pub)) (pub, priv)
-                     | (pub,priv,_comment) <- pk
-                     ]
 
 echoServer :: Chan SessionEvent -> (Maybe S.ByteString -> IO ()) -> IO ()
 echoServer chan write = loop

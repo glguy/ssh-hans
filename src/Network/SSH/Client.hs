@@ -25,6 +25,7 @@ import qualified Control.Exception as X
 import           Control.Monad ( forever, when )
 import qualified Data.ByteString.Char8 as S
 import qualified Data.ByteString.Lazy as L
+import qualified Data.ByteString.Short as Short
 import           Data.IORef ( writeIORef, readIORef )
 import           Data.Monoid ( (<>) )
 import           Data.Serialize ( runPutLazy )
@@ -47,6 +48,7 @@ data ClientState = ClientState
   , csNet    :: Client
   , csUser   :: S.ByteString
   , csGetPw  :: IO S.ByteString
+  , csKeys   :: [Named (SshPubCert, PrivateKey)]
   }
 
 sshClient :: ClientState -> IO ()
@@ -98,15 +100,41 @@ authenticate state clientSt client = do
   send client state
     (SshMsgUserAuthRequest user svc
       (SshAuthPassword pw Nothing))
-  response <- receive client state
-  case response of
-    SshMsgUserAuthSuccess -> die "successfully logged in using pw!"
-    SshMsgUserAuthFailure methods partialSuccess
-      | null methods
-      , not partialSuccess -> die "could not log in!"
-      | otherwise          -> debug $
-          "password login failed! can continue with: " ++ show methods
-  die "TODO(conathan): authenticate using password or publickey"
+  success <- handleAuthResponse "password"
+
+  when (not success) $
+    authLoop user svc (csKeys clientSt)
+
+  where
+  authLoop _    _   []           = die "could not log in!"
+  authLoop user svc (cred:creds) = do
+    debug "attempting public key ..."
+    let pubKeyAlg            = Short.fromShort $ nameOf cred
+    let (pubKey, privateKey) = namedThing cred
+    Just sid                <- readIORef (sshSessionId state)
+    let token = pubKeyAuthenticationToken sid user svc pubKeyAlg pubKey
+    sig      <- sign privateKey token
+    send client state
+      (SshMsgUserAuthRequest user svc
+        (SshAuthPublicKey pubKeyAlg pubKey (Just sig)))
+    success <- handleAuthResponse "publickey"
+    when (not success) $
+      authLoop user svc creds
+
+  handleAuthResponse :: String -> IO Bool
+  handleAuthResponse type' = do
+    response <- receive client state
+    case response of
+      SshMsgUserAuthSuccess -> do
+        debug $ "successfully logged in using " ++ type' ++ "!"
+        return True
+      SshMsgUserAuthFailure methods partialSuccess
+        | null methods
+        , not partialSuccess -> die "could not log in!"
+        | otherwise          -> do
+            debug $ type' ++ " login failed! can continue with: " ++
+                    show methods
+            return False
 
 {-
 handleAuthentication ::
