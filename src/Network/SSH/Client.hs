@@ -13,7 +13,10 @@ module Network.SSH.Client (
 
 import           Network.SSH.Connection
 import           Network.SSH.Messages
+import           Network.SSH.Named
 import           Network.SSH.Packet
+import           Network.SSH.PrivateKeyFormat
+import           Network.SSH.PubKey
 import           Network.SSH.Rekey
 import           Network.SSH.State
 
@@ -42,6 +45,8 @@ debug s = putStrLn $ "debug: " ++ s
 data ClientState = ClientState
   { csIdent  :: SshIdent
   , csNet    :: Client
+  , csUser   :: S.ByteString
+  , csGetPw  :: IO S.ByteString
   }
 
 sshClient :: ClientState -> IO ()
@@ -60,7 +65,7 @@ sshClient clientSt = do
   debug "key exchange done!"
 
   debug "starting auth ..."
-  authenticate state client
+  authenticate state clientSt client
   debug "auth done!"
 
 -- TODO(conathan): factor out: duplicated from Network.ssh.server.
@@ -71,8 +76,8 @@ sayHello state client v_c =
      -- parseFrom used because ident doesn't use the normal framing
      parseFrom client (sshBuf state) getSshIdent
 
-authenticate :: SshState -> Client -> IO ()
-authenticate state client = do
+authenticate :: SshState -> ClientState -> Client -> IO ()
+authenticate state clientSt client = do
   debug "requesting ssh-userauth service from server ..."
   send client state (SshMsgServiceRequest SshUserAuth)
   SshMsgServiceAccept service <-
@@ -83,6 +88,24 @@ authenticate state client = do
         "unexpected service, expected 'ssh-userauth'!" ""
   debug "server accepted ssh-userauth service request!"
   
+  let user = csUser clientSt
+  let svc  = SshConnection
+  -- let svc  = SshServiceOther "no-such-service@galois.com"
+  debug $ "attempting to log in as \"" ++ S.unpack user ++ "\" ..."
+
+  debug "attempting password ..."
+  pw <- csGetPw clientSt
+  send client state
+    (SshMsgUserAuthRequest user svc
+      (SshAuthPassword pw Nothing))
+  response <- receive client state
+  case response of
+    SshMsgUserAuthSuccess -> die "successfully logged in using pw!"
+    SshMsgUserAuthFailure methods partialSuccess
+      | null methods
+      , not partialSuccess -> die "could not log in!"
+      | otherwise          -> debug $
+          "password login failed! can continue with: " ++ show methods
   die "TODO(conathan): authenticate using password or publickey"
 
 {-

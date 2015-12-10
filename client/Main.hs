@@ -21,6 +21,7 @@ import           Network
                      , Socket )
 import           System.IO ( Handle, hClose )
 
+import System.IO
 import System.Posix.IO ( fdToHandle, closeFd )
 import Control.Concurrent
 import System.FilePath
@@ -50,14 +51,26 @@ import LoadKeys
 -- terminal-control-char-based attacks. We may want to implement this
 -- at some point, or at least warn users about this in the docs.
 
+-- TODO(conathan): add real argument parsing? E.g., OpenSSh uses your
+-- current username unless you put '<user>@' in from of the host name.
 main :: IO ()
 main = withSocketsDo $ do
   args <- getArgs
-  when ("-h" `elem` args || "--help" `elem` args || length args /= 2) $
-    die "usage: client SERVER_ADDR SERVER_PORT"
-  let [addr, portStr] = args
-  let port            = fromInteger $ read portStr
-  handle <- connectTo addr (PortNumber port)
+  when ("-h" `elem` args || "--help" `elem` args ||
+        not (length args `elem` [2,3])) $
+    die . unlines $
+      [ "usage: client USER SERVER_ADDR SERVER_PORT [PRIVATE_KEY]"
+      , ""
+      , "The optional private key file must be in OpenSSH format;"
+      , "see `:/server/README.md` for details."
+      ]
+  let (user:host:portStr:rest) = args
+  let port                     = fromInteger $ read portStr
+
+  let prompt = user ++ "@" ++ host ++ "'s password: "
+  let getPw  = S8.pack <$> getPassword prompt
+
+  handle <- connectTo host (PortNumber port)
 -- Might be useful for sending keys to server later.
 {-
      home    <- getHomeDirectory
@@ -66,13 +79,16 @@ main = withSocketsDo $ do
      let creds = [(S8.pack user,pubKeys)]
 -}
      -- sshServer (mkServer sAuth creds sock)
-  sshClient (mkClientState handle)
+  sshClient (mkClientState handle user getPw)
 
-mkClientState :: Handle -> ClientState
-mkClientState handle = ClientState 
-  { csIdent = greeting
-  , csNet   = mkClient handle
-  }
+
+mkClientState :: Handle -> String -> IO S.ByteString -> ClientState
+mkClientState handle user getPw = ClientState{..}
+  where
+  csIdent = greeting
+  csNet   = mkClient handle
+  csUser  = S8.pack user
+  csGetPw = getPw
 
 greeting :: SshIdent
 greeting  = SshIdent "SSH-2.0-SSH_HaLVM_2.0_Client"
@@ -84,6 +100,21 @@ mkClient h = Client { .. }
   cPut   = S.hPutStr  h . L.toStrict
   cClose =   hClose   h
   cLog   = putStrLn
+
+-- Based on http://stackoverflow.com/a/4064482/470844
+getPassword :: String -> IO String
+getPassword prompt = do
+  putStr prompt
+  hFlush stdout
+  pass <- withEcho False getLine
+  putChar '\n'
+  return pass
+  where
+  withEcho :: Bool -> IO a -> IO a
+  withEcho echo action = do
+    old <- hGetEcho stdin
+    bracket_ (hSetEcho stdin echo) (hSetEcho stdin old) action
+
   -- Need to refactor 'Client' to remove fields not shared between
   -- client and server. See Network.ssh.state.
 

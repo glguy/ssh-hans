@@ -6,6 +6,8 @@ module Network.SSH.Messages where
 
 import           Network.SSH.Protocol
 
+
+import           Control.Monad ( when )
 import           Data.ByteString.Short (ShortByteString)
 import qualified Data.ByteString.Char8 as S
 import           Data.ByteString.Lazy ()
@@ -13,6 +15,7 @@ import           Data.Serialize
                      ( Get, Putter, Put, label, isolate, getBytes, putByteString
                      , putWord8, getWord8, getWord32be, putWord32be, runPut
                      , remaining )
+import           Data.Maybe ( isJust, fromJust )
 import           Data.Word ( Word32 )
 
 #if !MIN_VERSION_base(4,8,0)
@@ -275,7 +278,7 @@ data SshSig
 newtype SshSessionId = SshSessionId S.ByteString
 
 data SshAuthMethod = SshAuthPublicKey S.ByteString SshPubCert (Maybe SshSig)
-                   | SshAuthPassword !S.ByteString (Maybe S.ByteString)
+                   | SshAuthPassword !S.ByteString (Maybe S.ByteString) {- ^ optional new password -}
                    | SshAuthHostBased !S.ByteString !S.ByteString !S.ByteString !S.ByteString !S.ByteString
                    | SshAuthNone
                      deriving (Show,Eq)
@@ -346,7 +349,7 @@ putSshMsg msg =
        SshMsgKexDhInit n                -> putString n
        SshMsgKexDhReply c f s           -> putDhReply c f s
 
-       SshMsgUserAuthRequest         {} -> fail "unimplemented"
+       SshMsgUserAuthRequest user svc m -> putUserAuthRequest user svc m
        SshMsgUserAuthFailure ms p       -> putUserAuthFailure ms p
        SshMsgUserAuthSuccess            -> return ()
        SshMsgUserAuthBanner txt lang    -> putString txt >> putString lang
@@ -514,6 +517,23 @@ putSshService SshUserAuth            = putString "ssh-userauth"
 putSshService SshConnection          = putString "ssh-connection"
 putSshService (SshServiceOther name) = putString name
 
+putUserAuthRequest :: S.ByteString -> SshService -> SshAuthMethod -> Put
+putUserAuthRequest user service method =
+  do putString user
+     putSshService service
+     putAuthMethod method
+
+putAuthMethod :: Putter SshAuthMethod
+putAuthMethod (SshAuthPublicKey {})              = fail "putAuthMethod: unimplemented"
+putAuthMethod (SshAuthPassword oldPw maybeNewPw) =
+  do putString "password"
+     putBoolean (isJust maybeNewPw)
+     putString oldPw
+     when (isJust maybeNewPw) $
+       putString (fromJust maybeNewPw)
+putAuthMethod (SshAuthHostBased {}) = fail "putAuthMethod: unimplemented"
+putAuthMethod (SshAuthNone {})      = putString "none"
+
 putUserAuthFailure :: [ShortByteString] -> Bool -> Put
 putUserAuthFailure methods partialSuccess =
   do putNameList methods
@@ -577,7 +597,6 @@ getSshMsg  =
        SshMsgTagKexInit                 -> SshMsgKexInit <$> getSshProposal
        SshMsgTagNewKeys                 -> return SshMsgNewKeys
        SshMsgTagKexDhInit               -> SshMsgKexDhInit  <$> getString
-       -- TODO(conathan): implement
        SshMsgTagKexDhReply              -> getDhReply
        SshMsgTagUserAuthRequest         -> getAuthRequest
        SshMsgTagUserAuthFailure         -> getUserAuthFailure
@@ -737,20 +756,6 @@ getSshSig  = label "SshSig" $
        _ ->
          do bytes <- getBytes =<< remaining
             return (SshSigOther name bytes)
-
-{-
-getDhReply :: Get SshMsg
-getDhReply  =
-  do pubKeyLen <- getWord32be
-     pubKey    <- isolate (fromIntegral pubKeyLen) getSshPubCert
-
-     f         <- getMpInt
-
-     sigLen    <- getWord32be
-     sig       <- isolate (fromIntegral sigLen) getSshSig
-
-     return (SshMsgKexDhReply pubKey f sig)
--}
 
 getSshService :: Get SshService
 getSshService  =
