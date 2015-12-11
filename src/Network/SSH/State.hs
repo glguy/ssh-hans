@@ -93,20 +93,28 @@ data Role = ClientRole | ServerRole
 --
 -- Mnemonic: argument order is the same as the function name: client
 -- and then server.
-clientAndServer2us ::
-  Role -> a {- ^ client value -} -> a {- ^ server value -} -> a
-clientAndServer2us ClientRole c _ = c
-clientAndServer2us ServerRole _ s = s
+clientAndServer2usAndThem ::
+  Role -> a {- ^ client value -} -> a {- ^ server value -} -> (a, a)
+clientAndServer2usAndThem ClientRole c s = (c, s)
+clientAndServer2usAndThem ServerRole c s = (s, c)
 
-usAndThem2c ::
-  Role -> a {- ^ our value -} -> a {- ^ their value -} -> a
-usAndThem2c ClientRole us _   = us
-usAndThem2c ServerRole _ them = them
+clientAndServer2us :: Role -> a -> a -> a
+clientAndServer2us role c s = fst $ clientAndServer2usAndThem role c s
 
-usAndThem2s ::
-  Role -> a {- ^ our value -} -> a {- ^ their value -} -> a
-usAndThem2s ClientRole _ them = them
-usAndThem2s ServerRole us _   = us
+clientAndServer2them :: Role -> a -> a -> a
+clientAndServer2them role c s = snd $ clientAndServer2usAndThem role c s
+
+
+usAndThem2clientAndServer ::
+  Role -> a {- ^ our value -} -> a {- ^ their value -} -> (a, a)
+usAndThem2clientAndServer ClientRole us them = (us, them)
+usAndThem2clientAndServer ServerRole us them = (them, us)
+
+usAndThem2c :: Role -> a -> a -> a
+usAndThem2c role us them = fst $ usAndThem2clientAndServer role us them
+
+usAndThem2s :: Role -> a -> a -> a
+usAndThem2s role us them = snd $ usAndThem2clientAndServer role us them
 
 
 type CompressFun = S.ByteString -> IO L.ByteString
