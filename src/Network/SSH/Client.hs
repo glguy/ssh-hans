@@ -64,7 +64,7 @@ sshClient clientSt = do
   writeIORef (sshIdents state) (v_s,v_c)
 
   debug "starting key exchange ..."
-  initialKeyExchange_c client state
+  initialKeyExchange client state
   debug "key exchange done!"
 
   debug "starting auth ..."

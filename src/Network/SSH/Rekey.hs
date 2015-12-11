@@ -30,31 +30,19 @@ import qualified Data.ByteString.Lazy as L
 -- sends a proposal and waits for the response.
 initialKeyExchange :: Client -> SshState -> IO ()
 initialKeyExchange client state =
-  do i_s <- mkProposal (sshProposalPrefs state)
-     sendProposal client state i_s
-     SshMsgKexInit i_c <- receive client state
-     rekeyConnection_s client state i_s i_c
-
-initialKeyExchange_c :: Client -> SshState -> IO ()
-initialKeyExchange_c client state =
-  do i_c <- mkProposal (sshProposalPrefs state)
-     sendProposal client state i_c
-     SshMsgKexInit i_s <- receive client state
-     rekeyConnection_c client state i_s i_c
+  do i_us <- mkProposal (sshProposalPrefs state)
+     sendProposal client state i_us
+     SshMsgKexInit i_them <- receive client state
+     rekeyConnection client state i_us i_them
 
 -- | Subsequent entry point into the rekeying logic. This version
 -- is called when a proposal has already been received and only
 -- sends the response.
 rekeyKeyExchange :: Client -> SshState -> SshProposal -> IO ()
-rekeyKeyExchange client state i_c =
-  -- TODO(conathan): BUG! Make role agnostic by merging with
-  -- 'initialKeyExchange'; the only difference is whether we've
-  -- already received the 'SshMsgKexInit'.
-  --
-  -- This is called by connection handling code.
-  do i_s <- mkProposal (sshProposalPrefs state)
-     sendProposal client state i_c
-     rekeyConnection_s client state i_s i_c
+rekeyKeyExchange client state i_them =
+  do i_us <- mkProposal (sshProposalPrefs state)
+     sendProposal client state i_us
+     rekeyConnection client state i_us i_them
 
 sendProposal :: Client -> SshState -> SshProposal -> IO ()
 sendProposal client state i_us =
@@ -115,6 +103,11 @@ allAlgsSshProposalPrefs = SshProposalPrefs
       SshAlgs (map nameOf allCompression) (map nameOf allCompression)
   }
 
+rekeyConnection :: Client -> SshState -> SshProposal -> SshProposal -> IO ()
+rekeyConnection client state i_us i_them
+  | ClientRole <- sshRole state = rekeyConnection_c client state i_us i_them
+  | ServerRole <- sshRole state = rekeyConnection_s client state i_us i_them
+
 dieGracefullyOnSuiteFailure :: Client -> SshState -> Maybe CipherSuite -> IO CipherSuite
 dieGracefullyOnSuiteFailure client state Nothing = do
   send client state (SshMsgDisconnect SshDiscProtocolError
@@ -132,7 +125,7 @@ rekeyConnection_s client state i_s i_c =
      debug' $ "server: computed suite:"
      debug' $ show (suite_desc suite)
 
-     handleMissedGuess client state i_s i_c
+     handleMissedGuess client state suite i_s i_c
 
      SshMsgKexDhInit pub_c <- receive client state
      (pub_s, kexFinish)    <- kexRun (suite_kex suite)
@@ -150,26 +143,26 @@ rekeyConnection_s client state i_s i_c =
 
      installSecurity client state suite sid k
 
--- | When the client's proposal says that a kex guess packet
--- is coming, but the guess was wrong, we must drop the next
--- packet.
+-- | When their proposal says that a kex guess packet
+-- is coming, but their guess was wrong, we must drop the next packet.
 handleMissedGuess ::
   Client -> SshState ->
-  SshProposal {- ^ server -} ->
-  SshProposal {- ^ client -} ->
+  CipherSuite ->
+  SshProposal {- ^ us   -} ->
+  SshProposal {- ^ them -} ->
   IO ()
-handleMissedGuess client state i_s i_c
-  | sshFirstKexFollows i_c
-  , kex:_ <- sshKexAlgs i_c
-  , kex `notElem` sshKexAlgs i_s = void (receive client state)
+handleMissedGuess client state suite i_us i_them
+  | sshFirstKexFollows i_them
+  , guess:_        <- sshKexAlgs i_them
+  , actual         <- suite_kex_desc (suite_desc suite)
+  , guess /= actual = void (receive client state)
 
   | otherwise = return ()
-
 
 debug' s = putStrLn $ "debug: " ++ s
 
 rekeyConnection_c :: Client -> SshState -> SshProposal -> SshProposal -> IO ()
-rekeyConnection_c client state i_s i_c =
+rekeyConnection_c client state i_c i_s =
   do (v_s, v_c) <- readIORef (sshIdents state)
      debug' "negotiating suite in client..."
      suite <- dieGracefullyOnSuiteFailure client state
@@ -177,8 +170,7 @@ rekeyConnection_c client state i_s i_c =
      debug' "negotiated suite:"
      debug' $ show (suite_desc suite)
 
-     -- TODO(conathan): need to add a 'handleMissedGuess' here from
-     -- client's point of view.
+     handleMissedGuess client state suite i_c i_s
 
      debug' "computed suite!"
      let kex = suite_kex suite
