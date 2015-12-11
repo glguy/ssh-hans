@@ -38,9 +38,6 @@ import UnixTerminalFlags
 import LoadKeys
 -}
 
--- TODO(conathan): change default cipher suite in client, or at least
--- make the cipher suite configurable.
-
 -- TODO(conathan): make client GHC 7.8 compatible.
 
 -- TODO(conathan): implement key reexchange after threshold: RFC 4253

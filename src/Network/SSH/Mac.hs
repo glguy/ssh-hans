@@ -52,8 +52,7 @@ data Mac = Mac
 
 allMac :: [ Named (L.ByteString -> Mac) ]
 allMac =
-  [ mac_none
-  , mac_hmac_md5
+  [ mac_hmac_md5
   , mac_hmac_md5_96
   , mac_hmac_ripemd160
   , mac_hmac_sha1
@@ -73,6 +72,11 @@ allMac =
   , mac_umac_64_etm
   , mac_umac_128
   , mac_umac_128_etm
+
+  -- Put this last so it's not used on accident; the entries in this
+  -- list are interpreted to be in preference order in
+  -- 'allAlgsSshProposalPrefs'.
+  , mac_none
   ]
 
 -- Algorithms ------------------------------------------------------------------

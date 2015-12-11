@@ -103,9 +103,7 @@ activateCipherD_none = activateCipherD nullKeys (namedThing cipher_none)
 
 allCipher :: [ Named Cipher ]
 allCipher =
-  [ cipher_none
-
-  , cipher_3des_cbc
+  [ cipher_3des_cbc
 
   , cipher_aes128_cbc
   , cipher_aes192_cbc
@@ -125,6 +123,11 @@ allCipher =
   , cipher_blowfish_cbc
 
   , cipher_chacha20_poly1305
+
+  -- Put this last so it's not used on accident; the entries in this
+  -- list are interpreted to be in preference order in
+  -- 'allAlgsSshProposalPrefs'.
+  , cipher_none
   ]
 
 -- Supported Ciphers -----------------------------------------------------------

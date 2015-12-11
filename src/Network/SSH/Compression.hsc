@@ -27,6 +27,8 @@ data Compression = Compression
   , makeDecompress :: IO (S.ByteString -> IO L.ByteString)
   }
 
+-- The order of this list is interpreted as preference order
+-- in 'allAlgsSshProposalPrefs'.
 allCompression :: [Named Compression]
 allCompression = [compression_none, compression_zlib]
 
