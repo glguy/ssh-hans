@@ -129,6 +129,17 @@ pubKeyAuthenticationToken
        putString     publicKeyAlgorithm
        putString     (runPut (putSshPubCert publicKey))
 
+-- | The host-key algorithms supported by 'verify'.
+allHostKeyAlgs :: NameList
+allHostKeyAlgs =
+  [ "ssh-rsa"
+  , "ssh-dss"
+  , "ecdsa-sha2-nistp256"
+  , "ecdsa-sha2-nistp384"
+  , "edcsa-sha2-nistp521"
+  , "ssh-ed25519"
+  ]
+
 -- | Verify a signature.
 verify :: SshPubCert -> SshSig -> S.ByteString -> Bool
 verify publicKey signature token =
@@ -162,6 +173,8 @@ verify publicKey signature token =
            return (Ed25519.verify p token s)
         `catchCryptoFailure` \_ ->
            False
+
+      (SshPubOther _ _, _) -> False -- Unsupported
 
       _ -> error "verify: bad key/signature combo!"
                  -- Probably better to fail loud here warning that

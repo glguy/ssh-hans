@@ -49,13 +49,14 @@ data ClientState = ClientState
   , csUser   :: S.ByteString
   , csGetPw  :: IO S.ByteString
   , csKeys   :: [Named (SshPubCert, PrivateKey)]
+  , csAlgs   :: SshProposalPrefs
   }
 
 sshClient :: ClientState -> IO ()
 sshClient clientSt = do
   -- The '[]' is "server credentials", i.e. server private keys; we
   -- might want client keys here?
-  state <- initialState ClientRole []
+  state <- initialState (csAlgs clientSt) ClientRole []
   let v_c = csIdent clientSt
   let client = csNet clientSt
   v_s <- sayHello state client v_c

@@ -15,6 +15,7 @@ module Network.SSH.Server (
 
 import           Network.SSH.Connection
 import           Network.SSH.Messages
+import           Network.SSH.Named
 import           Network.SSH.Packet
 import           Network.SSH.Rekey
 import           Network.SSH.State
@@ -39,7 +40,10 @@ sshServer sock = forever $
   do client <- sAccept sock
 
      forkIO $
-       do state <- initialState ServerRole (sAuthenticationAlgs sock)
+       do let creds = sAuthenticationAlgs sock
+          let prefs = allAlgsSshProposalPrefs
+                { sshServerHostKeyAlgsPrefs = map nameOf creds }
+          state <- initialState prefs ServerRole creds
           let v_s = sIdent sock
           v_c <- sayHello state client v_s
           writeIORef (sshIdents state) (v_s,v_c)

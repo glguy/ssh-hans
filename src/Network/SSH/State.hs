@@ -117,17 +117,28 @@ data SshState = SshState
   , sshBuf       :: !(IORef S.ByteString)
   , sshSendState :: !(MVar (Word32, Cipher, ActiveCipher, Mac, CompressFun, ChaChaDRG)) -- ^ Server encryption context
   , sshSessionId :: !(IORef (Maybe SshSessionId))
-  , sshAuthMethods :: [ServerCredential]
-  , sshIdents :: !(IORef (SshIdent, SshIdent)) -- server, client
-  , sshRole :: Role
+  , sshRole          :: Role
+  , sshAuthMethods   :: [ServerCredential]
+  , sshIdents        :: !(IORef (SshIdent, SshIdent)) -- server, client
+  , sshProposalPrefs :: SshProposalPrefs
   }
+
+-- | Partial specification of an 'SshProposal'.
+data SshProposalPrefs = SshProposalPrefs
+  { sshKexAlgsPrefs           :: NameList
+  , sshServerHostKeyAlgsPrefs :: NameList
+  , sshEncAlgsPrefs           :: !SshAlgs
+  , sshMacAlgsPrefs           :: !SshAlgs
+  , sshCompAlgsPrefs          :: !SshAlgs
+  } deriving (Eq,Show,Read)
 
 type ServerCredential = Named (SshPubCert, PrivateKey)
 
 -- TODO(conathan): factor out server credentials since they don't make
 -- sense in the client.
-initialState :: Role -> [ServerCredential] -> IO SshState
-initialState sshRole creds =
+initialState ::
+  SshProposalPrefs -> Role -> [ServerCredential] -> IO SshState
+initialState prefs sshRole creds =
   do drg          <- drgNew
      let none = namedThing cipher_none
      sshRecvState <- newIORef (0,none
@@ -141,8 +152,9 @@ initialState sshRole creds =
                                 ,drg)
      sshBuf       <- newIORef S.empty
      sshSessionId <- newIORef Nothing
-     sshIdents <- newIORef (error "idents uninitialized")
-     let sshAuthMethods = creds
+     sshIdents    <- newIORef (error "idents uninitialized")
+     let sshAuthMethods   = creds
+     let sshProposalPrefs = prefs
      return SshState { .. }
 
 -- | Construct a new, random cookie

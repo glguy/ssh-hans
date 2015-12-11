@@ -9,6 +9,8 @@ import           Network.SSH.Client
 import           Network.SSH.Named
 import           Network.SSH.PubKey
 import           Network.SSH.PrivateKeyFormat
+import           Network.SSH.Rekey
+import           Network.SSH.State
 
 import           Control.Monad ( forever, when, (<=<) )
 import           Control.Exception
@@ -95,9 +97,20 @@ mkClientState handle user getPw keys = ClientState{..}
   csUser  = S8.pack user
   csGetPw = getPw
   csKeys  = keys
+  csAlgs  = proposalPrefs
 
 greeting :: SshIdent
 greeting  = SshIdent "SSH-2.0-SSH_HaLVM_2.0_Client"
+
+proposalPrefs :: SshProposalPrefs
+proposalPrefs = allAlgsSshProposalPrefs
+  -- If you put an unsupported algorithm in any of these lists, then
+  -- you'll get an error listing all the supported algorithms for that
+  -- field.
+  { sshEncAlgsPrefs  = SshAlgs ["aes256-ctr"] ["aes192-ctr"]
+  , sshMacAlgsPrefs  = SshAlgs ["hmac-sha2-256"] ["hmac-sha2-512"]
+  , sshCompAlgsPrefs = SshAlgs ["none"] ["none"]
+  }
 
 mkClient :: Handle -> Client
 mkClient h = Client { .. }

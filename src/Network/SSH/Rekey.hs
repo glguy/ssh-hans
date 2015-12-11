@@ -14,7 +14,7 @@ import Network.SSH.Packet
 
 import Control.Applicative ((<|>))
 import Control.Monad (when)
-import Data.List (find)
+import Data.List ((\\), find)
 import Data.IORef (readIORef, modifyIORef')
 import Control.Concurrent
 import Control.Monad
@@ -30,15 +30,15 @@ import qualified Data.ByteString.Lazy as L
 -- sends a proposal and waits for the response.
 initialKeyExchange :: Client -> SshState -> IO ()
 initialKeyExchange client state =
-  do let authMethods = map nameOf (sshAuthMethods state)
-     i_s <- sendProposal authMethods client state
+  do i_s <- mkProposal (sshProposalPrefs state)
+     sendProposal client state i_s
      SshMsgKexInit i_c <- receive client state
      rekeyConnection_s client state i_s i_c
 
 initialKeyExchange_c :: Client -> SshState -> IO ()
 initialKeyExchange_c client state =
-  do let authMethods = ["ssh-dss", "ssh-rsa"] -- RFC 4253 Section 6.6
-     i_c <- sendProposal authMethods client state
+  do i_c <- mkProposal (sshProposalPrefs state)
+     sendProposal client state i_c
      SshMsgKexInit i_s <- receive client state
      rekeyConnection_c client state i_s i_c
 
@@ -47,23 +47,73 @@ initialKeyExchange_c client state =
 -- sends the response.
 rekeyKeyExchange :: Client -> SshState -> SshProposal -> IO ()
 rekeyKeyExchange client state i_c =
-  -- TODO(conathan): bug! Make role agnostic by merging with
+  -- TODO(conathan): BUG! Make role agnostic by merging with
   -- 'initialKeyExchange'; the only difference is whether we've
   -- already received the 'SshMsgKexInit'.
   --
   -- This is called by connection handling code.
-  do let authMethods = map nameOf (sshAuthMethods state)
-     debug' "using server-specific auth methods!"
-     i_s <- sendProposal authMethods client state
+  do i_s <- mkProposal (sshProposalPrefs state)
+     sendProposal client state i_c
      rekeyConnection_s client state i_s i_c
 
-sendProposal :: [ShortByteString] -> Client -> SshState -> IO SshProposal
-sendProposal authMethods client state =
-  do cookie <- newCookie
-     let i_us = supportedKex authMethods cookie
-     debug' $ "auth methods: " ++ show authMethods
+sendProposal :: Client -> SshState -> SshProposal -> IO ()
+sendProposal client state i_us =
+  do debug' $ "auth methods: " ++ show (sshServerHostKeyAlgs i_us)
      send client state (SshMsgKexInit i_us)
-     return i_us
+
+-- | Build 'SshProposal' from preferences.
+--
+-- An error occurs if some suplied algorithm is not supported.
+mkProposal :: SshProposalPrefs -> IO SshProposal
+mkProposal prefs = do
+  sshProposalCookie <- newCookie
+
+  sshServerHostKeyAlgs <- check list    sshServerHostKeyAlgsPrefs
+  sshKexAlgs           <- check list    sshKexAlgsPrefs
+  sshEncAlgs           <- check sshAlgs sshEncAlgsPrefs
+  sshMacAlgs           <- check sshAlgs sshMacAlgsPrefs
+  sshCompAlgs          <- check sshAlgs sshCompAlgsPrefs
+
+  let sshLanguages       = SshAlgs [] []
+  let sshFirstKexFollows = False
+  return SshProposal{..}
+
+  where
+  -- Apply one of the below checkers.
+  check :: (a -> a -> IO a) -> (SshProposalPrefs -> a) -> IO a
+  check check' project =
+    check' (project prefs) (project allAlgsSshProposalPrefs)
+
+  -- Check that preferred algorithms are supported and die loudly if
+  -- not.
+  list :: (Eq a, Show a) => [a] -> [a] -> IO [a]
+  list preferred supported = do
+    let unsupported = preferred \\ supported
+    when (not $ null unsupported) $
+      fail $ "mkProposal: unsupported algorithms: " ++ show unsupported ++
+             "            supported algorithms: " ++ show supported
+    return preferred
+
+  sshAlgs :: SshAlgs -> SshAlgs -> IO SshAlgs
+  sshAlgs (SshAlgs p_c p_s) (SshAlgs s_c s_s) =
+    SshAlgs <$> list p_c s_c <*> list p_s s_s
+
+-- | The collection of all supported algorithms.
+--
+-- A client can use these prefs as is. A server, on the other hand,
+-- should specify 'sshServerHostKeyAlgsPrefs' corresponding to the
+-- types of actual private keys it has.
+allAlgsSshProposalPrefs :: SshProposalPrefs
+allAlgsSshProposalPrefs = SshProposalPrefs
+  { sshKexAlgsPrefs           = map nameOf allKex
+  , sshServerHostKeyAlgsPrefs = allHostKeyAlgs
+  , sshEncAlgsPrefs           =
+      SshAlgs (map nameOf allCipher)      (map nameOf allCipher)
+  , sshMacAlgsPrefs           =
+      SshAlgs (map nameOf allMac)         (map nameOf allMac)
+  , sshCompAlgsPrefs          =
+      SshAlgs (map nameOf allCompression) (map nameOf allCompression)
+  }
 
 dieGracefullyOnSuiteFailure :: Client -> SshState -> Maybe CipherSuite -> IO CipherSuite
 dieGracefullyOnSuiteFailure client state Nothing = do
@@ -269,16 +319,3 @@ determineAlg ::
   (SshProposal -> [ShortByteString]) {- ^ selector -} ->
   Maybe ShortByteString
 determineAlg server client f = find (`elem` f server) (f client)
-
-supportedKex :: [ShortByteString] -> SshCookie -> SshProposal
-supportedKex hostKeyAlgs cookie =
-  SshProposal
-    { sshKexAlgs           = (map nameOf allKex)
-    , sshServerHostKeyAlgs = hostKeyAlgs
-    , sshEncAlgs           = SshAlgs (map nameOf allCipher) (map nameOf allCipher)
-    , sshMacAlgs           = SshAlgs (map nameOf allMac) (map nameOf allMac)
-    , sshCompAlgs          = SshAlgs (map nameOf allCompression) (map nameOf allCompression)
-    , sshLanguages         = SshAlgs [] []
-    , sshFirstKexFollows   = False
-    , sshProposalCookie    = cookie
-    }
