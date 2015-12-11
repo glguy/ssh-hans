@@ -13,7 +13,6 @@ import Network.SSH.State
 import Network.SSH.Packet
 
 import Control.Applicative ((<|>))
-import Control.Monad (when)
 import Data.List ((\\), find)
 import Data.IORef (readIORef, modifyIORef')
 import Control.Concurrent
@@ -125,7 +124,7 @@ rekeyConnection_s client state i_s i_c =
      debug' $ "server: computed suite:"
      debug' $ show (suite_desc suite)
 
-     handleMissedGuess client state suite i_s i_c
+     handleMissedGuess client state suite i_c
 
      SshMsgKexDhInit pub_c <- receive client state
      (pub_s, kexFinish)    <- kexRun (suite_kex suite)
@@ -148,10 +147,9 @@ rekeyConnection_s client state i_s i_c =
 handleMissedGuess ::
   Client -> SshState ->
   CipherSuite ->
-  SshProposal {- ^ us   -} ->
   SshProposal {- ^ them -} ->
   IO ()
-handleMissedGuess client state suite i_us i_them
+handleMissedGuess client state suite i_them
   | sshFirstKexFollows i_them
   , guess:_        <- sshKexAlgs i_them
   , actual         <- suite_kex_desc (suite_desc suite)
@@ -170,7 +168,7 @@ rekeyConnection_c client state i_c i_s =
      debug' "negotiated suite:"
      debug' $ show (suite_desc suite)
 
-     handleMissedGuess client state suite i_c i_s
+     handleMissedGuess client state suite i_s
 
      debug' "computed suite!"
      let kex = suite_kex suite

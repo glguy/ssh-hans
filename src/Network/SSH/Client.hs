@@ -8,10 +8,12 @@ module Network.SSH.Client (
   , ClientState(..)
   , SessionEvent(..)
   , AuthResult(..)
+  , defaultClientState
+  , defaultGetPassword
+  , getPassword
   , sshClient
   ) where
 
-import           Network.SSH.Connection
 import           Network.SSH.Messages
 import           Network.SSH.Named
 import           Network.SSH.Packet
@@ -19,39 +21,39 @@ import           Network.SSH.PrivateKeyFormat
 import           Network.SSH.PubKey
 import           Network.SSH.Rekey
 import           Network.SSH.State
+import           Network.SSH.Server ( sayHello )
 
-import           Control.Concurrent
 import qualified Control.Exception as X
-import           Control.Monad ( forever, when )
+import           Control.Monad ( when )
 import qualified Data.ByteString.Char8 as S
 import qualified Data.ByteString.Lazy as L
 import qualified Data.ByteString.Short as Short
 import           Data.IORef ( writeIORef, readIORef )
 import           Data.Monoid ( (<>) )
-import           Data.Serialize ( runPutLazy )
 import           System.Exit ( die )
+import           System.IO
 
 -- Public API ------------------------------------------------------------------
 
-{-
-data Server = Server
-  { sAccept :: IO Client
-  , sAuthenticationAlgs :: [ServerCredential]
-  , sIdent :: SshIdent
-  }
--}
-
+debug :: String -> IO ()
 debug s = putStrLn $ "debug: " ++ s
 
 data ClientState = ClientState
   { csIdent  :: SshIdent
   , csNet    :: Client
   , csUser   :: S.ByteString
-  , csGetPw  :: IO S.ByteString
+    -- | Optional password provider.
+  , csGetPw  :: Maybe (IO S.ByteString)
   , csKeys   :: [Named (SshPubCert, PrivateKey)]
   , csAlgs   :: SshProposalPrefs
+    -- | Optional hook to run after transport is setup, but before
+    -- auth.
+  , csTransportHook :: Maybe (Client -> SshState -> IO ())
   }
 
+-- | Run an SSh client.
+--
+-- See 'mkDefaultClientState' for configuration details.
 sshClient :: ClientState -> IO ()
 sshClient clientSt = do
   -- The '[]' is "server credentials", i.e. server private keys; we
@@ -67,17 +69,91 @@ sshClient clientSt = do
   initialKeyExchange client state
   debug "key exchange done!"
 
+  maybe (return ()) (\f -> f client state)
+    (csTransportHook clientSt)
+
   debug "starting auth ..."
   authenticate state clientSt client
   debug "auth done!"
 
--- TODO(conathan): factor out: duplicated from Network.ssh.server.
--- | Exchange identification information
-sayHello :: SshState -> Client -> SshIdent -> IO SshIdent
-sayHello state client v_c =
-  do cPut client (runPutLazy $ putSshIdent v_c)
-     -- parseFrom used because ident doesn't use the normal framing
-     parseFrom client (sshBuf state) getSshIdent
+-- | Make a client state with reasonable defaults.
+--
+-- The software version string @version@ will be appended to
+-- "SSH-2.0-", telling the remote host to use SSH Protocol Version 2.
+--
+-- For the host-connection handle @handle@, you can use
+--
+--   @withSocketsDo $ connectTo host (PortNumber $ fromIntegral port)@
+--
+-- on non-HaLVM systems after importing @Network@.
+--
+-- For the password provider @getPw@, use
+--
+--   @Just $ defaultGetPassword user host@
+--
+-- if you want to read a password from stdin, use
+--
+--   @Just $ return "<pw>"@
+--
+-- if you want to hardcode the password @<pw>@, and use 'Nothing' if
+-- you don't want to use passwords.
+--
+-- If the optional key file in @keyFile@ is not provided, then the
+-- client will have no keys, and can only do password auth.
+--
+-- If the optional algorithm prefs in @prefs@ are not provided, then
+-- all supported algorithms will be used.
+--
+-- If the optional transport hook in @hook@ is not provided, then no
+-- transport hook is run.
+defaultClientState ::
+  String ->                              {- ^ software version           -}
+  String -> String -> Int ->
+  Handle ->                              {- ^ host connection            -}
+  Maybe (IO S.ByteString) ->             {- ^ optional password provider -}
+  Maybe FilePath ->                      {- ^ optional private key file  -}
+  Maybe SshProposalPrefs ->              {- ^ optional algorithm prefs   -}
+  Maybe (Client -> SshState -> IO ()) -> {- ^ optional transport hook    -}
+  IO ClientState
+defaultClientState version user host port handle getPw keyFile prefs hook = do
+  let csIdent = SshIdent $ S.pack ("SSH-2.0-" <> version)
+  let csNet   = mkDefaultClient handle
+  let csUser  = S.pack user
+  let csGetPw = getPw
+  csKeys     <- maybe (return []) loadPrivateKeys keyFile
+  let csAlgs  = maybe allAlgsSshProposalPrefs id prefs
+  let csTransportHook = hook
+  return ClientState{..}
+
+mkDefaultClient :: Handle -> Client
+mkDefaultClient h = Client { .. }
+  where
+  cGet   = S.hGetSome h
+  cPut   = S.hPutStr  h . L.toStrict
+  cClose =   hClose   h
+  cLog   = putStrLn
+
+-- | A default 'csGetPw' implementation.
+--
+-- Uses the OpenSSH password prompt.
+defaultGetPassword :: String -> String -> IO S.ByteString
+defaultGetPassword user host =
+  getPassword $ user ++ "@" ++ host ++ "'s password: "
+
+-- | Read a line from @stdin@ with echo disabled.
+getPassword :: String -> IO S.ByteString
+-- Based on http://stackoverflow.com/a/4064482/470844
+getPassword prompt = do
+  putStr prompt
+  hFlush stdout
+  pass <- withEcho False S.getLine
+  putChar '\n'
+  return pass
+  where
+  withEcho :: Bool -> IO a -> IO a
+  withEcho echo action = do
+    old <- hGetEcho stdin
+    X.bracket_ (hSetEcho stdin echo) (hSetEcho stdin old) action
 
 authenticate :: SshState -> ClientState -> Client -> IO ()
 authenticate state clientSt client = do
@@ -91,24 +167,32 @@ authenticate state clientSt client = do
         "unexpected service, expected 'ssh-userauth'!" ""
   debug "server accepted ssh-userauth service request!"
   
-  let user = csUser clientSt
-  let svc  = SshConnection
   -- let svc  = SshServiceOther "no-such-service@galois.com"
   debug $ "attempting to log in as \"" ++ S.unpack user ++ "\" ..."
 
-  debug "attempting password ..."
-  pw <- csGetPw clientSt
-  send client state
-    (SshMsgUserAuthRequest user svc
-      (SshAuthPassword pw Nothing))
-  success <- handleAuthResponse "password"
+  success <- publicKeyAuthLoop user svc (csKeys clientSt)
 
-  when (not success) $
-    authLoop user svc (csKeys clientSt)
+  when (not success) $ do
+    success' <- case csGetPw clientSt of
+      Nothing    -> return False
+      Just getPw -> passwordAuth getPw
+    when (not success') $
+      die "could not log in!"
 
   where
-  authLoop _    _   []           = die "could not log in!"
-  authLoop user svc (cred:creds) = do
+  svc  = SshConnection
+  user = csUser clientSt
+
+  passwordAuth getPw = do
+    debug "attempting password ..."
+    pw <- getPw
+    send client state
+      (SshMsgUserAuthRequest user svc
+        (SshAuthPassword pw Nothing))
+    handleAuthResponse "password"
+
+  publicKeyAuthLoop _    _   []           = return False
+  publicKeyAuthLoop user svc (cred:creds) = do
     debug "attempting public key ..."
     let pubKeyAlg            = Short.fromShort $ nameOf cred
     let (pubKey, privateKey) = namedThing cred
@@ -119,8 +203,9 @@ authenticate state clientSt client = do
       (SshMsgUserAuthRequest user svc
         (SshAuthPublicKey pubKeyAlg pubKey (Just sig)))
     success <- handleAuthResponse "publickey"
-    when (not success) $
-      authLoop user svc creds
+    if success
+    then return True
+    else publicKeyAuthLoop user svc creds
 
   handleAuthResponse :: String -> IO Bool
   handleAuthResponse type' = do
@@ -136,51 +221,3 @@ authenticate state clientSt client = do
             debug $ type' ++ " login failed! can continue with: " ++
                     show methods
             return False
-
-{-
-handleAuthentication ::
-  SshState -> Client -> IO (Maybe (S.ByteString, SshService))
-handleAuthentication state client =
-  do let notAvailable = send client state
-                      $ SshMsgDisconnect SshDiscServiceNotAvailable "" ""
-
-     Just session_id <- readIORef (sshSessionId state)
-     req <- receive client state
-     case req of
-
-       SshMsgServiceRequest SshUserAuth ->
-         do send client state (SshMsgServiceAccept SshUserAuth)
-            authLoop
-
-        where
-         authLoop =
-           do userReq <- receive client state
-              case userReq of
-
-                SshMsgUserAuthRequest user svc method ->
-                  do result <- cAuthHandler client session_id user svc method
-
-                     case result of
-
-                       AuthAccepted ->
-                         do send client state SshMsgUserAuthSuccess
-                            return (Just (user, svc))
-
-                       AuthPkOk keyAlg key ->
-                         do send client state
-                              (SshMsgUserAuthPkOk keyAlg key)
-                            authLoop
-
-                       AuthFailed [] ->
-                         do send client state (SshMsgUserAuthFailure [] False)
-                            return Nothing
-
-                       AuthFailed ms ->
-                         do send client state (SshMsgUserAuthFailure ms False)
-                            authLoop
-
-
-                _ -> notAvailable >> return Nothing
-
-       _ -> notAvailable >> return Nothing
--}

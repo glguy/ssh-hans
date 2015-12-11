@@ -12,25 +12,23 @@ import           Network.SSH.PrivateKeyFormat
 import           Network.SSH.Rekey
 import           Network.SSH.State
 
-import           Control.Monad ( forever, when, (<=<) )
+import qualified Graphics.Vty as Vty
+import           Network
+                   ( PortID(..), HostName, PortNumber, Socket
+                   , connectTo, withSocketsDo )
+
+import           Control.Concurrent
 import           Control.Exception
+import           Control.Monad ( forever, when, (<=<) )
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Short as Short
 import qualified Data.ByteString.Char8 as S8
 import qualified Data.ByteString.Lazy as L
-import           Network
-                     ( PortID(..), HostName, PortNumber, connectTo, withSocketsDo
-                     , Socket )
-import           System.IO ( Handle, hClose )
-
-import System.IO
-import System.Posix.IO ( fdToHandle, closeFd )
-import Control.Concurrent
-import System.FilePath
-import System.Environment
-import System.Exit ( die )
-import System.Directory (getHomeDirectory)
-import qualified Graphics.Vty as Vty
+import           System.Environment
+import           System.Exit ( die )
+import           System.Directory (getHomeDirectory)
+import           System.IO
+import           System.Posix.IO ( fdToHandle, closeFd )
 
 {-
 import Openpty
@@ -53,7 +51,7 @@ import LoadKeys
 -- TODO(conathan): add real argument parsing? E.g., OpenSSh uses your
 -- current username unless you put '<user>@' in from of the host name.
 main :: IO ()
-main = withSocketsDo $ do
+main = do
   args <- getArgs
   when ("-h" `elem` args || "--help" `elem` args ||
         not (length args `elem` [3,4])) $
@@ -64,40 +62,26 @@ main = withSocketsDo $ do
       , "see `:/server/README.md` for details."
       ]
   let (user:host:portStr:rest) = args
-  let port                     = fromInteger $ read portStr
-  keys <- case rest of
-    [file] -> loadPrivateKeys file
-    _      -> return []
-
-  let prompt = user ++ "@" ++ host ++ "'s password: "
-  let getPw  = S8.pack <$> getPassword prompt
-
-  handle <- connectTo host (PortNumber port)
--- Might be useful for sending keys to server later.
-{-
+  let port    = read portStr
+  handle     <- withSocketsDo $
+                  connectTo host (PortNumber $ fromIntegral port)
+  let keyFile = case rest of
+                  [file] -> Just file
+                  _      -> Nothing
+  let version = "SSH-HANS-Client"
+  let getPw   = Just $ defaultGetPassword user host
+  let prefs   = Just proposalPrefs
+  let hook    = Nothing
+  clientSt   <- defaultClientState
+                  version user host port handle getPw keyFile prefs hook
+  sshClient clientSt
+  -- Might be useful for sending keys to server later.
+  {-
      home    <- getHomeDirectory
      pubKeys <- loadPublicKeys (home </> ".ssh" </> "authorized_keys")
      user    <- getEnv "USER"
      let creds = [(S8.pack user,pubKeys)]
--}
-     -- sshServer (mkServer sAuth creds sock)
-  sshClient (mkClientState handle user getPw keys)
-
-
-mkClientState ::
-  Handle -> String -> IO S.ByteString -> [Named (SshPubCert,PrivateKey)] ->
-  ClientState
-mkClientState handle user getPw keys = ClientState{..}
-  where
-  csIdent = greeting
-  csNet   = mkClient handle
-  csUser  = S8.pack user
-  csGetPw = getPw
-  csKeys  = keys
-  csAlgs  = proposalPrefs
-
-greeting :: SshIdent
-greeting  = SshIdent "SSH-2.0-SSH_HaLVM_2.0_Client"
+  -}
 
 proposalPrefs :: SshProposalPrefs
 proposalPrefs = allAlgsSshProposalPrefs
@@ -108,91 +92,3 @@ proposalPrefs = allAlgsSshProposalPrefs
   , sshMacAlgsPrefs  = SshAlgs ["hmac-sha2-256"] ["hmac-sha2-512"]
   , sshCompAlgsPrefs = SshAlgs ["none"] ["none"]
   }
-
-mkClient :: Handle -> Client
-mkClient h = Client { .. }
-  where
-  cGet   = S.hGetSome h
-  cPut   = S.hPutStr  h . L.toStrict
-  cClose =   hClose   h
-  cLog   = putStrLn
-
--- Based on http://stackoverflow.com/a/4064482/470844
-getPassword :: String -> IO String
-getPassword prompt = do
-  putStr prompt
-  hFlush stdout
-  pass <- withEcho False getLine
-  putChar '\n'
-  return pass
-  where
-  withEcho :: Bool -> IO a -> IO a
-  withEcho echo action = do
-    old <- hGetEcho stdin
-    bracket_ (hSetEcho stdin echo) (hSetEcho stdin old) action
-
-  -- Need to refactor 'Client' to remove fields not shared between
-  -- client and server. See Network.ssh.state.
-
-{-
-  cOpenShell term winsize termflags eventChannel writeBytes =
-    do (masterFd, slaveFd) <-
-         openpty
-           Nothing
-           (Just (convertWindowSize winsize))
-           (Just (foldl (\t (key,val) -> setTerminalFlag key val t) defaultTermios
-                     termflags))
-
-       masterH <- fdToHandle masterFd
-
-       _ <- forkIO $
-         forever (do out <- S.hGetSome masterH 1024
-                     writeBytes (Just out)
-                 ) `finally` writeBytes Nothing
-
-       _ <- forkIO $
-         let loop = do event <- readChan eventChannel
-                       case event of
-                         SessionClose -> closeFd slaveFd
-                         SessionWinsize winsize' ->
-                           do changePtyWinsize masterFd (convertWindowSize winsize')
-                              loop
-                         SessionData bs ->
-                           do S.hPut masterH bs
-                              loop
-         in loop
-
-       let config = Vty.Config
-                      { Vty.vmin     = Just 1
-                      , Vty.vtime    = Just 100
-                      , Vty.debugLog = Nothing
-                      , Vty.inputMap = []
-                      , Vty.inputFd  = Just slaveFd
-                      , Vty.outputFd = Just slaveFd
-                      , Vty.termName = Just (S8.unpack term)
-                      }
-
-       SetGame.gameMain config
-       hClose masterH
--}
-
-
-{-
-mkServer :: [ServerCredential] -> [ClientCredential] -> Socket -> Server
-mkServer auths creds sock = Server
-  { sAccept = mkClient creds `fmap` accept sock
-  , sAuthenticationAlgs = auths
-  , sIdent = greeting
-  }
-
-convertWindowSize :: SshWindowSize -> Winsize
-convertWindowSize winsize =
-  Winsize
-    { wsRow    = fromIntegral $ sshWsRows winsize
-    , wsCol    = fromIntegral $ sshWsCols winsize
-    , wsXPixel = fromIntegral $ sshWsX    winsize
-    , wsYPixel = fromIntegral $ sshWsY    winsize
-    }
-
-type ClientCredential = (S.ByteString, [SshPubCert])
--}

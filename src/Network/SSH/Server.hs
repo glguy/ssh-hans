@@ -10,6 +10,7 @@ module Network.SSH.Server (
   , SessionEvent(..)
   , AuthResult(..)
   , sshServer
+  , sayHello
 
   ) where
 
@@ -68,8 +69,8 @@ sshServer sock = forever $
 
 -- | Exchange identification information
 sayHello :: SshState -> Client -> SshIdent -> IO SshIdent
-sayHello state client v_s =
-  do cPut client (runPutLazy $ putSshIdent v_s)
+sayHello state client v_us =
+  do cPut client (runPutLazy $ putSshIdent v_us)
      -- parseFrom used because ident doesn't use the normal framing
      parseFrom client (sshBuf state) getSshIdent
 
