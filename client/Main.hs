@@ -59,7 +59,7 @@ main = do
       [ "usage: client USER SERVER_ADDR SERVER_PORT [PRIVATE_KEY]"
       , ""
       , "The optional private key file must be in OpenSSH format;"
-      , "see `:/server/README.md` for details."
+      , "see `:/client/README.md` for details."
       ]
   let (user:host:portStr:rest) = args
   let port    = read portStr
