@@ -4,11 +4,7 @@
 module Main where
 
 import           Network.SSH.Messages
-import           Network.SSH.Packet ( SshIdent(..) )
 import           Network.SSH.Client
-import           Network.SSH.Named
-import           Network.SSH.PubKey
-import           Network.SSH.PrivateKeyFormat
 import           Network.SSH.Rekey
 import           Network.SSH.State
 

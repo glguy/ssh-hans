@@ -35,9 +35,6 @@ import           System.IO
 
 -- Public API ------------------------------------------------------------------
 
-debug :: String -> IO ()
-debug s = putStrLn $ "debug: " ++ s
-
 data ClientState = ClientState
   { csIdent  :: SshIdent
   , csNet    :: Client

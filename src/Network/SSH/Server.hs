@@ -72,8 +72,9 @@ sayHello :: SshState -> Client -> SshIdent -> IO SshIdent
 sayHello state client v_us =
   do cPut client (runPutLazy $ putSshIdent v_us)
      -- parseFrom used because ident doesn't use the normal framing
-     parseFrom client (sshBuf state) getSshIdent
-
+     v_them <- parseFrom client (sshBuf state) getSshIdent
+     debug $ "their SSH version: " ++ S.unpack (sshIdentString v_them)
+     return v_them
 
 handleAuthentication ::
   SshState -> Client -> IO (Maybe (S.ByteString, SshService))

@@ -26,6 +26,8 @@ import qualified Data.ByteString.Char8 as S8
 import qualified Data.ByteString.Lazy as L
 import           Crypto.Random
 
+debug :: String -> IO ()
+debug s = putStrLn $ "debug: " ++ s
 
 -- Server Internals ------------------------------------------------------------
 

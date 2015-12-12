@@ -45,7 +45,7 @@ rekeyKeyExchange client state i_them =
 
 sendProposal :: Client -> SshState -> SshProposal -> IO ()
 sendProposal client state i_us =
-  do debug' $ "auth methods: " ++ show (sshServerHostKeyAlgs i_us)
+  do debug $ "auth methods: " ++ show (sshServerHostKeyAlgs i_us)
      send client state (SshMsgKexInit i_us)
 
 -- | Build 'SshProposal' from preferences.
@@ -121,8 +121,8 @@ rekeyConnection_s client state i_s i_c =
 
      suite <- dieGracefullyOnSuiteFailure client state
             $ computeSuite state sAuth i_s i_c
-     debug' $ "server: computed suite:"
-     debug' $ show (suite_desc suite)
+     debug $ "server: computed suite:"
+     debug $ show (suite_desc suite)
 
      handleMissedGuess client state suite i_c
 
@@ -157,28 +157,26 @@ handleMissedGuess client state suite i_them
 
   | otherwise = return ()
 
-debug' s = putStrLn $ "debug: " ++ s
-
 rekeyConnection_c :: Client -> SshState -> SshProposal -> SshProposal -> IO ()
 rekeyConnection_c client state i_c i_s =
   do (v_s, v_c) <- readIORef (sshIdents state)
-     debug' "negotiating suite in client..."
+     debug "negotiating suite in client..."
      suite <- dieGracefullyOnSuiteFailure client state
             $ computeSuite state [] i_s i_c
-     debug' "negotiated suite:"
-     debug' $ show (suite_desc suite)
+     debug "negotiated suite:"
+     debug $ show (suite_desc suite)
 
      handleMissedGuess client state suite i_s
 
-     debug' "computed suite!"
+     debug "computed suite!"
      let kex = suite_kex suite
      (pub_c, kexFinish) <- kexRun kex
-     debug' "ran kex! sending dhInit to server ..."
+     debug "ran kex! sending dhInit to server ..."
      send client state (SshMsgKexDhInit pub_c)
-     debug' "sent dhInit to server! waiting for dhReply ..."
+     debug "sent dhInit to server! waiting for dhReply ..."
      SshMsgKexDhReply pub_cert_s pub_s sig_s <-
        receiveSpecific SshMsgTagKexDhReply client state
-     debug' "got dhReply from server!"
+     debug "got dhReply from server!"
      k <- maybe (fail "bad remote public") return (kexFinish pub_s)
      let sid = SshSessionId
              $ kexHash kex
@@ -186,12 +184,12 @@ rekeyConnection_c client state i_c i_s =
 
      -- the session id doesn't change on rekeying
      modifyIORef' (sshSessionId state) (<|> Just sid)
-     debug' "verifying server sig ..."
+     debug "verifying server sig ..."
      when (not $ verifyServerSig pub_cert_s sig_s sid) $ do
        send client state (SshMsgDisconnect SshDiscKexFailed
                             "Unable to verify server sig!" "")
        fail "Unable to verify server sig!"
-     debug' "verified server sig!"
+     debug "verified server sig!"
 
      installSecurity client state suite sid k
 
