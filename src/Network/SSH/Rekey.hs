@@ -107,24 +107,15 @@ rekeyConnection client state i_us i_them
   | ClientRole <- sshRole state = rekeyConnection_c client state i_us i_them
   | ServerRole <- sshRole state = rekeyConnection_s client state i_us i_them
 
-dieGracefullyOnSuiteFailure :: Client -> SshState -> Maybe CipherSuite -> IO CipherSuite
-dieGracefullyOnSuiteFailure client state Nothing = do
-  send client state (SshMsgDisconnect SshDiscProtocolError
-                       "Failed to agree on cipher suite!" "")
-  fail "cipher suite negotiation failed"
-dieGracefullyOnSuiteFailure _ _ (Just cs) = return cs
-
 rekeyConnection_s :: Client -> SshState -> SshProposal -> SshProposal -> IO ()
 rekeyConnection_s client state i_s i_c =
   do (v_s, v_c) <- readIORef (sshIdents state)
-     let sAuth = sshAuthMethods state
+     let (i_us, i_them) = (i_s, i_c)
 
-     suite <- dieGracefullyOnSuiteFailure client state
-            $ computeSuite state sAuth i_s i_c
-     debug $ "server: computed suite:"
-     debug $ show (suite_desc suite)
+     let creds = sshAuthMethods state
+     suite    <- computeSuiteOrDie client state creds i_c i_s
 
-     handleMissedGuess client state suite i_c
+     handleMissedGuess client state suite i_them
 
      SshMsgKexDhInit pub_c <- receive client state
      (pub_s, kexFinish)    <- kexRun (suite_kex suite)
@@ -142,33 +133,15 @@ rekeyConnection_s client state i_s i_c =
 
      installSecurity client state suite sid k
 
--- | When their proposal says that a kex guess packet
--- is coming, but their guess was wrong, we must drop the next packet.
-handleMissedGuess ::
-  Client -> SshState ->
-  CipherSuite ->
-  SshProposal {- ^ them -} ->
-  IO ()
-handleMissedGuess client state suite i_them
-  | sshFirstKexFollows i_them
-  , guess:_        <- sshKexAlgs i_them
-  , actual         <- suite_kex_desc (suite_desc suite)
-  , guess /= actual = void (receive client state)
-
-  | otherwise = return ()
-
 rekeyConnection_c :: Client -> SshState -> SshProposal -> SshProposal -> IO ()
 rekeyConnection_c client state i_c i_s =
   do (v_s, v_c) <- readIORef (sshIdents state)
-     debug "negotiating suite in client..."
-     suite <- dieGracefullyOnSuiteFailure client state
-            $ computeSuite state [] i_s i_c
-     debug "negotiated suite:"
-     debug $ show (suite_desc suite)
+     let (i_us, i_them) = (i_c, i_s)
 
-     handleMissedGuess client state suite i_s
+     suite <- computeSuiteOrDie client state [] i_c i_s
 
-     debug "computed suite!"
+     handleMissedGuess client state suite i_them
+
      let kex = suite_kex suite
      (pub_c, kexFinish) <- kexRun kex
      debug "ran kex! sending dhInit to server ..."
@@ -192,6 +165,43 @@ rekeyConnection_c client state i_c i_s =
      debug "verified server sig!"
 
      installSecurity client state suite sid k
+
+-- | When their proposal says that a kex guess packet
+-- is coming, but their guess was wrong, we must drop the next packet.
+handleMissedGuess ::
+  Client -> SshState ->
+  CipherSuite ->
+  SshProposal {- ^ them -} ->
+  IO ()
+handleMissedGuess client state suite i_them
+  | sshFirstKexFollows i_them
+  , guess:_        <- sshKexAlgs i_them
+  , actual         <- suite_kex_desc (suite_desc suite)
+  , guess /= actual = void (receive client state)
+
+  | otherwise = return ()
+
+-- The Client should pass @[]@ for the @serverCreds@.
+computeSuiteOrDie ::
+  Client -> SshState -> [ServerCredential] -> SshProposal -> SshProposal ->
+  IO CipherSuite
+computeSuiteOrDie client state serverCreds i_c i_s = do
+  let i_them = clientAndServer2them (sshRole state) i_c i_s
+  debug "negotiating cipher suite ..."
+  debug $ "their ssh proposal: " ++ show i_them
+  suite <- dieGracefullyOnSuiteFailure client state
+         $ computeSuite state serverCreds i_s i_c
+  debug "negotiated suite:"
+  debug $ show (suite_desc suite)
+  return suite
+
+dieGracefullyOnSuiteFailure ::
+  Client -> SshState  -> Maybe CipherSuite -> IO CipherSuite
+dieGracefullyOnSuiteFailure client state Nothing = do
+  send client state (SshMsgDisconnect SshDiscProtocolError
+                       "Failed to agree on cipher suite!" "")
+  fail "cipher suite negotiation failed"
+dieGracefullyOnSuiteFailure _ _ (Just cs) = return cs
 
 installSecurity ::
   Client -> SshState -> CipherSuite ->
