@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
@@ -30,8 +31,16 @@ import qualified Data.ByteString.Lazy as L
 import qualified Data.ByteString.Short as Short
 import           Data.IORef ( writeIORef, readIORef )
 import           Data.Monoid ( (<>) )
-import           System.Exit ( die )
 import           System.IO
+
+#if MIN_VERSION_base(4,8,0)
+import           System.Exit ( die )
+#else
+import           System.Exit ( exitFailure )
+die :: String -> IO a
+die err = hPutStrLn stderr err >> exitFailure
+#endif
+
 
 -- Public API ------------------------------------------------------------------
 

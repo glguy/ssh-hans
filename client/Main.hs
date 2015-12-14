@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 
@@ -21,18 +22,23 @@ import qualified Data.ByteString.Short as Short
 import qualified Data.ByteString.Char8 as S8
 import qualified Data.ByteString.Lazy as L
 import           System.Environment
-import           System.Exit ( die )
 import           System.Directory (getHomeDirectory)
 import           System.IO
 import           System.Posix.IO ( fdToHandle, closeFd )
+
+#if MIN_VERSION_base(4,8,0)
+import           System.Exit ( die )
+#else
+import           System.Exit ( exitFailure )
+die :: String -> IO a
+die err = hPutStrLn stderr err >> exitFailure
+#endif
 
 {-
 import Openpty
 import UnixTerminalFlags
 import LoadKeys
 -}
-
--- TODO(conathan): make client GHC 7.8 compatible.
 
 -- TODO(conathan): implement key reexchange after threshold: RFC 4253
 -- section 9 suggests that key reexchange should happen about every

@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 module Network.SSH.Rekey where
@@ -13,6 +14,9 @@ import Network.SSH.State
 import Network.SSH.Packet
 
 import Control.Applicative ((<|>))
+#if !MIN_VERSION_base(4,8,0)
+import Control.Applicative ((<$>), (<*>))
+#endif
 import Data.List ((\\), find)
 import Data.IORef (readIORef, modifyIORef')
 import Control.Concurrent
