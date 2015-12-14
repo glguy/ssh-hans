@@ -6,9 +6,6 @@ resolver: lts-2.22
 # Local packages, usually specified by relative directory name
 packages:
 - '.'
-- location:
-    git: git@github.com:glguy/set-game.git
-    commit: 2f0365552a5167ba616c476db71beb1fc626ee81
 
 # Packages to be pulled from upstream that are not in the resolver (e.g., acme-missiles-0.3)
 extra-deps:
@@ -16,6 +13,7 @@ extra-deps:
 - cereal-0.5.1.0
 - cryptonite-0.9
 - memory-0.10
+- setgame-1.1
 
 - bytestring-0.10.6.0
 - directory-1.2.2.0
