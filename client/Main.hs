@@ -90,6 +90,23 @@ proposalPrefs = allAlgsSshProposalPrefs
   -- If you put an unsupported algorithm in any of these lists, then
   -- you'll get an error listing all the supported algorithms for that
   -- field.
+
+  -- The @hmac-sha2-512@ MAC causes problems with some *but not all*
+  -- OpenSSH servers!?
+  --
+  -- Works with:
+  --
+  -- - linux.cecs.pdx.edu: SSH-2.0-OpenSSH_6.6.1p1 Ubuntu-2ubuntu2.3
+  -- - localhost:          SSH-2.0-OpenSSH_6.7p1 Ubuntu-5ubuntu1.3
+  -- - cs.uoregon.edu:     SSH-2.0-OpenSSH_6.6.1p1 Ubuntu-2ubuntu2.2
+  --
+  -- Does not work with:
+  --
+  -- - src.galois.com:     SSH-2.0-OpenSSH_5.3
+  -- - alumni.cs.wisc.edu: SSH-2.0-OpenSSH_5.3
+  --
+  -- According to OpenSSH docs, support for @hmac-sha2-512@ was not
+  -- added until version 5.9: http://www.openssh.com/txt/release-5.9.
   { sshEncAlgsPrefs  = SshAlgs ["aes256-ctr"] ["aes192-ctr"]
   , sshMacAlgsPrefs  = SshAlgs ["hmac-sha2-256"] ["hmac-sha2-512"]
   , sshCompAlgsPrefs = SshAlgs ["none"] ["none"]
