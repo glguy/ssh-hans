@@ -110,11 +110,12 @@ rekeyConnection :: Client -> SshState -> SshProposal -> SshProposal -> IO ()
 rekeyConnection client state i_us i_them
   | ClientRole <- sshRole state = rekeyConnection_c client state i_us i_them
   | ServerRole <- sshRole state = rekeyConnection_s client state i_us i_them
+  | otherwise = error "rekeyConnection: unreachable code!"
 
 rekeyConnection_s :: Client -> SshState -> SshProposal -> SshProposal -> IO ()
 rekeyConnection_s client state i_s i_c =
   do (v_s, v_c) <- readIORef (sshIdents state)
-     let (i_us, i_them) = (i_s, i_c)
+     let (_i_us, i_them) = (i_s, i_c)
 
      let creds = sshAuthMethods state
      suite    <- computeSuiteOrDie client state creds i_c i_s
@@ -140,7 +141,7 @@ rekeyConnection_s client state i_s i_c =
 rekeyConnection_c :: Client -> SshState -> SshProposal -> SshProposal -> IO ()
 rekeyConnection_c client state i_c i_s =
   do (v_s, v_c) <- readIORef (sshIdents state)
-     let (i_us, i_them) = (i_c, i_s)
+     let (_i_us, i_them) = (i_c, i_s)
 
      suite <- computeSuiteOrDie client state [] i_c i_s
 

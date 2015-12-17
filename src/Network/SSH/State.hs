@@ -6,7 +6,6 @@ module Network.SSH.State where
 
 
 import           Network.SSH.Ciphers
-import           Network.SSH.Keys
 import           Network.SSH.Mac
 import           Network.SSH.Messages
 import           Network.SSH.Named
@@ -176,6 +175,9 @@ send client SshState { .. } msg =
   modifyMVar_ sshSendState $ \(seqNum, cipher, activeCipher, mac, comp, gen) ->
     do payload <- comp (runPut (putSshMsg msg))
        let (pkt,activeCipher',gen') = putSshPacket seqNum cipher activeCipher mac gen payload
+       -- TODO(conathan): how to tell if the connection is closed
+       -- here? Would like to raise an error when trying to write to a
+       -- closed connection, no?
        cPut client pkt
        return (seqNum+1, cipher, activeCipher',mac, comp, gen')
 
@@ -204,9 +206,9 @@ receive client SshState { .. } = loop
                                                                        (S8.unpack m))
                                                    loop -- XXX drop controls
                                  | otherwise -> loop
-         SshMsgDisconnect reason msg _lang   ->
+         SshMsgDisconnect reason msg' _lang   ->
            fail $ "other end disconnected: " ++ show reason ++ ": " ++
-                  S8.unpack msg
+                  S8.unpack msg'
          _                                   -> return msg
 
 parseFrom :: Client -> IORef S.ByteString -> Get a -> IO a

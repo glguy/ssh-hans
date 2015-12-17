@@ -7,14 +7,12 @@ module Main where
 import           Network.SSH.Messages
 import           Network.SSH.Packet ( SshIdent(..) )
 import           Network.SSH.Server
-import           Network.SSH.Named
 import           Network.SSH.PubKey
 import           Network.SSH.PrivateKeyFormat
 
 import           Control.Monad
 import           Control.Exception
 import qualified Data.ByteString as S
-import qualified Data.ByteString.Short as Short
 import qualified Data.ByteString.Char8 as S8
 import qualified Data.ByteString.Lazy as L
 import           Network
@@ -30,10 +28,6 @@ import System.Environment
 import System.Directory (getHomeDirectory)
 import qualified SetGame
 import qualified Graphics.Vty as Vty
-
-#if !MIN_VERSION_base(4,8,0)
-import Control.Applicative
-#endif
 
 import Openpty
 import UnixTerminalFlags
