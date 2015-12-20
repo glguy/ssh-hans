@@ -40,6 +40,11 @@ import UnixTerminalFlags
 import LoadKeys
 -}
 
+-- TODO(conathan): add a default algorithm selection which is better
+-- than the current "all algorithms" default. Some ideas for what
+-- should be in the default here:
+-- https://stribika.github.io/2015/01/04/secure-secure-shell.html.
+
 -- TODO(conathan): implement key reexchange after threshold: RFC 4253
 -- section 9 suggests that key reexchange should happen about every
 -- hour or every GB of traffic, whichever comes first.

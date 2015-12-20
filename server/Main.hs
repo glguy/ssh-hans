@@ -79,9 +79,16 @@ mkClient creds (h,_,_) = Client { .. }
   cRequestExec "echo" events writeback =
     do void (forkIO (echoServer events writeback))
        return True
-
   cRequestExec _command _events _writeback =
     return False
+
+  -- Same as 'exec echo' above, which you access in OpenSSH by running
+  -- @ssh <host> echo@. To access this "echo" subsystem in OpenSSH,
+  -- use @ssh <host> -s echo@.
+  cRequestSubsystem "echo" events writeback =
+    do void (forkIO (echoServer events writeback))
+       return True
+  cRequestSubsystem _ _ _ = return False
 
   cOpenShell term winsize termflags eventChannel writeBytes =
     do (masterFd, slaveFd) <-
@@ -144,11 +151,11 @@ mkClient creds (h,_,_) = Client { .. }
   cAuthHandler _session_id _user _svc _m =
        return (AuthFailed ["password","publickey"])
 
-echoServer :: Chan SessionEvent -> (Maybe S.ByteString -> IO ()) -> IO ()
-echoServer chan write = loop
+echoServer :: IO SessionEvent -> (Maybe S.ByteString -> IO ()) -> IO ()
+echoServer read' write = loop
   where
   loop =
-    do event <- readChan chan
+    do event <- read'
        case event of
          SessionData xs -> write (Just xs) >> loop
          SessionEof   -> write Nothing

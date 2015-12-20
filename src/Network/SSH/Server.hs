@@ -63,7 +63,7 @@ sshServer sock = forever $
                 _             -> return ()
 
        `X.finally` (do
-         putStrLn "debug: sshServer: caught exception, closing client..."
+         putStrLn "debug: main loop caught exception, closing client..."
          cClose client)
 
 

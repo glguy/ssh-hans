@@ -72,9 +72,38 @@ data Client = Client
                     (Maybe S.ByteString -> IO ()) ->
                     IO Bool
 
-  -- | Client requested executing a command. Return True to accept
+  -- | Client requested a subsystem. Return True to accept.
+  --
+  -- The 'S.ByteString' argument is the subsystem requested.
+  --
+  -- The @IO SessionEvent@ argument is used to read events from the
+  -- channel.
+  --
+  -- The @Maybe S.ByteString -> IO ()@ argument is used to write back
+  -- to the channel: send @Just bs@ to send @bs@, and @Nothing@ to
+  -- close the channel.
+  --
+  -- The subsystem mechanism allows for arbitrary "built in" commands
+  -- in SSH. The only subsystem that ships with an OpenSSH SSH server
+  -- is SFTP. An OpenSSH client requests the subsystem @<subsystem>@
+  -- using the syntax @ssh <host> -s <subsystem>@. Strangely, the @-s@
+  -- arg has to come *after* the host name.
+  , cRequestSubsystem
+                 :: S.ByteString ->
+                    IO SessionEvent ->
+                    (Maybe S.ByteString -> IO ()) ->
+                    IO Bool
+
+  -- | Client requested executing a command. Return True to accept.
+  --
+  -- See 'cRequestSubsystem' for explanation of arguments.
+  --
+  -- Exec requests are typically handled by running the requested
+  -- command through the user's shell. An OpenSSH client makes an exec
+  -- request for command @<command>@ using the syntax
+  -- @ssh <host> <command>@.
   , cRequestExec :: S.ByteString ->
-                    Chan SessionEvent ->
+                    IO SessionEvent ->
                     (Maybe S.ByteString -> IO ()) ->
                     IO Bool
 
