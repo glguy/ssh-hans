@@ -94,10 +94,16 @@ startConnectionService client state
 connectionService :: Connection ()
 connectionService =
   do msg <- connectionReceive
+     (client, state) <- Connection ask
+     let role = sshRole state
      case msg of
-       SshMsgKexInit i_c ->
-         do (client,state) <- Connection ask
-            liftIO (rekeyKeyExchange client state i_c)
+       SshMsgKexInit i_them ->
+         do liftIO (rekeyKeyExchange client state i_them)
+            connectionService
+
+       -- | RFC 4254 Section 6.1: clients should reject channel open.
+       SshMsgChannelOpen _ senderChannel _ _ | role == ClientRole ->
+         do rejectChannelOpenRequest senderChannel
             connectionService
 
        SshMsgChannelOpen SshChannelTypeSession
@@ -111,11 +117,13 @@ connectionService =
               connectionService
 
        SshMsgChannelOpen _ senderChannel _ _ ->
-           do connectionSend $
-                SshMsgChannelOpenFailure senderChannel SshOpenAdministrativelyProhibited "" ""
-              connectionService
+         do rejectChannelOpenRequest senderChannel
+            connectionService
 
-       SshMsgChannelRequest req chan wantReply ->
+       -- | RFC 4254 Section 6.5: client should ignore channel requests.
+       SshMsgChannelRequest req chan wantReply
+         | role == ClientRole -> connectionService
+         | otherwise ->
          do channelRequest req chan wantReply
             connectionService
 
@@ -143,6 +151,11 @@ connectionService =
          do connectionLog ("Unhandled message: " ++ show msg)
             connectionService
 
+  where
+    rejectChannelOpenRequest :: Word32 -> Connection ()
+    rejectChannelOpenRequest senderChannel =
+      connectionSend $
+        SshMsgChannelOpenFailure senderChannel SshOpenAdministrativelyProhibited "" ""
 
 -- TODO(conathan): unify with 'startDirectTcp' below; they're almost
 -- identical.
@@ -327,7 +340,16 @@ channelRequest request channelId wantReply =
 handleRequest :: SshChannelRequest -> Word32 -> SshChannel -> Connection Bool
 handleRequest request channelId channel = do
   (client, state) <- Connection ask
-  case request of
+  if sshRole state == ClientRole
+  -- Most of the channel requests are supposed to be ignored by the
+  -- client. Ignore them all for now.
+  --
+  -- A more flexible approach, which deviates from the standard, is to
+  -- leave it up to the library user to decide whether these requests
+  -- are supported in the client or not, by deciding whether to
+  -- provide the corresponding callbacks or not.
+  then return False
+  else case request of
     SshChannelRequestPtyReq term winsize modes ->
       do let termios = case parseTerminalModes modes of
                          Left _   -> []
