@@ -1,3 +1,4 @@
+{-# OPTIONS_GHC -w #-} -- TODO(conathan): clean up and enable warnings.
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}

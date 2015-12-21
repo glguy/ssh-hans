@@ -121,7 +121,7 @@ defaultClientState ::
   Maybe SshProposalPrefs ->              {- ^ optional algorithm prefs   -}
   Maybe (Client -> SshState -> IO ()) -> {- ^ optional transport hook    -}
   IO ClientState
-defaultClientState version user host port handle getPw keyFile prefs hook = do
+defaultClientState version user _host _port handle getPw keyFile prefs hook = do
   let csIdent = SshIdent $ S.pack ("SSH-2.0-" <> version)
   let csNet   = mkDefaultClient handle
   let csUser  = S.pack user
@@ -138,6 +138,13 @@ mkDefaultClient h = Client { .. }
   cPut   = S.hPutStr  h . L.toStrict
   cClose =   hClose   h
   cLog   = putStrLn
+
+  -- Disable the server-oriented operations.
+  cOpenShell _ _ _ _ _    = return False
+  cDirectTcp _ _ _ _      = return False
+  cRequestSubsystem _ _ _ = return False
+  cRequestExec _ _ _      = return False
+  cAuthHandler _ _ _ _    = return $ AuthFailed []
 
 -- | A default 'csGetPw' implementation.
 --
@@ -176,7 +183,7 @@ authenticate state clientSt client = do
   -- let svc  = SshServiceOther "no-such-service@galois.com"
   debug $ "attempting to log in as \"" ++ S.unpack user ++ "\" ..."
 
-  success <- publicKeyAuthLoop user svc (csKeys clientSt)
+  success <- publicKeyAuthLoop (csKeys clientSt)
 
   when (not success) $ do
     success' <- case csGetPw clientSt of
@@ -197,8 +204,8 @@ authenticate state clientSt client = do
         (SshAuthPassword pw Nothing))
     handleAuthResponse "password"
 
-  publicKeyAuthLoop _    _   []           = return False
-  publicKeyAuthLoop user svc (cred:creds) = do
+  publicKeyAuthLoop []           = return False
+  publicKeyAuthLoop (cred:creds) = do
     debug "attempting public key ..."
     let pubKeyAlg            = Short.fromShort $ nameOf cred
     let (pubKey, privateKey) = namedThing cred
@@ -211,7 +218,7 @@ authenticate state clientSt client = do
     success <- handleAuthResponse "publickey"
     if success
     then return True
-    else publicKeyAuthLoop user svc creds
+    else publicKeyAuthLoop creds
 
   handleAuthResponse :: String -> IO Bool
   handleAuthResponse type' = do
@@ -227,3 +234,4 @@ authenticate state clientSt client = do
             debug $ type' ++ " login failed! can continue with: " ++
                     show methods
             return False
+      _ -> fail "handleAuthResponse: unexpected response!"
