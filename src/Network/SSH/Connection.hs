@@ -4,49 +4,48 @@
 {-# LANGUAGE CPP #-}
 module Network.SSH.Connection where
 
-import Network.SSH.Messages
-import Network.SSH.State
-import Network.SSH.TerminalModes
-import Network.SSH.Rekey
+import           Network.SSH.Messages
+import           Network.SSH.Rekey
+import           Network.SSH.State
+import           Network.SSH.TerminalModes
 
-import Control.Concurrent
-import Control.Concurrent.STM
-import Control.Monad
+import           Control.Concurrent
+import           Control.Concurrent.STM
+import           Control.Monad
 
-import Data.Word
+import           Data.Word
 import qualified Data.Map as Map
 import           Data.Map ( Map )
 import qualified Data.ByteString as S
 
-import Control.Monad.Trans.Class
-import Control.Monad.IO.Class
-import Control.Monad.Trans.Reader (ask, ReaderT(..), runReaderT)
-import Control.Monad.Trans.State (get,put,modify,StateT, evalStateT)
+import           Control.Monad.Trans.Class
+import           Control.Monad.IO.Class
+import           Control.Monad.Trans.Reader (ask, ReaderT(..), runReaderT)
+import           Control.Monad.Trans.State (get,put,modify,StateT, evalStateT)
 
 #if !MIN_VERSION_base(4,8,0)
-import Control.Applicative
+import           Control.Applicative
 #endif
 
 data SshChannel = SshChannel
-  { sshChannelRemote        :: !Word32
-  , sshChannelEnv           :: [(S.ByteString,S.ByteString)]
-  , sshChannelThemWindowSize :: TVar Word32
-  , sshChannelMaximumPacket :: Word32
-  , sshChannelPty           :: Maybe (S.ByteString, SshWindowSize, [(TerminalFlag, Word32)])
-  , sshChannelEvents        :: Chan SessionEvent
+  { sshChannelId_them            :: !Word32
+  , sshChannelEnv                :: [(S.ByteString,S.ByteString)]
+  , sshChannelWindowSize_them    :: TVar Word32
+  , sshChannelMaximumPacket_them :: Word32
+  , sshChannelPty                :: Maybe (S.ByteString, SshWindowSize, [(TerminalFlag, Word32)])
+  , sshChannelEvents             :: Chan SessionEvent
 
-  -- | The original/max data window size. We copy their advertized
-  -- window size, so this value is for us and them.
-  , sshChannelOrigWindowSize :: Word32
+  -- | The original/max data window size.
+  , sshChannelOrigWindowSize_us :: Word32
   -- | The number of bytes 'SessionEvent's in our 'sshChannelEvents'
   -- FIFO.
   , sshChannelFifoSize :: TVar Word32
   -- | The number of bytes from them that our session handler has
-  -- processed, but for which we have not sent them a data window size
+  -- processed, but for which we have not sent them data window size
   -- updates.
   --
   -- From their point of view, our (remaining) window size is
-  -- @sshChannelOrigWindowSize - sshChannelFifoSize -- sshChannelProcessedSize@.
+  -- @sshChannelOrigWindowSize_us - sshChannelFifoSize -- sshChannelProcessedSize@.
   , sshChannelProcessedSize :: TVar Word32
   }
 
@@ -55,7 +54,7 @@ data SshChannel = SshChannel
 ----------------------
 
 newtype Connection a = Connection
-  { runConnection :: ReaderT (Client, SshState) (StateT (Map Word32 SshChannel) IO) a }
+  { unConnection :: ReaderT (Client, SshState) (StateT (Map Word32 SshChannel) IO) a }
   deriving (Functor, Applicative, Monad, MonadIO)
 
 connectionReceive :: Connection SshMsg
@@ -84,13 +83,36 @@ connectionModifyChannels = Connection . lift . modify
 
 ----------------------
 
-startConnectionService :: Client -> SshState -> IO ()
-startConnectionService client state
+-- | Run a 'Connection' computation in 'IO'.
+runConnection :: Client -> SshState -> Connection a -> IO a
+runConnection client state
   = flip evalStateT Map.empty
   . flip runReaderT (client, state)
-  . runConnection
-  $ connectionService
+  . unConnection
 
+-- | Send a channel-open request in a client.
+sendChannelOpenSession :: Connection ()
+sendChannelOpenSession =
+  -- Some of the channel state corresponding to them is not defined yet,
+  -- so we fill it in with 'error's until we know their values.
+  do (client, state) <- Connection ask
+     -- This initial window size and max packet size are what the
+     -- OpenSSH client sends in my experiments.
+     let origWindowSize_us  = 2097152
+     let maximumPacket_us   = 32768
+     let windowSize_them    = error "sendChannelOpen: bug: window_them!"
+     let channelId_them     = error "sendChannelOpen: bug: channel_them!"
+     let maximumPacket_them = error "sendChannelOpen: bug: max_packet_them!"
+     (channelId_us, _) <- channelOpenHelper
+       channelId_them windowSize_them maximumPacket_them origWindowSize_us
+     liftIO $ send client state
+       (SshMsgChannelOpen SshChannelTypeSession
+         channelId_us origWindowSize_us maximumPacket_us)
+
+-- | Listen for channel requests
+--
+-- Used by clients and servers, altho not all packets are allowed in
+-- both clients and servers.
 connectionService :: Connection ()
 connectionService =
   do msg <- connectionReceive
@@ -108,39 +130,49 @@ connectionService =
 
        SshMsgChannelOpen SshChannelTypeSession
          senderChannel initialWindowSize maximumPacketSize ->
-           do startSession senderChannel initialWindowSize maximumPacketSize
+           do handleChannelOpenSession senderChannel
+                initialWindowSize maximumPacketSize
               connectionService
 
        SshMsgChannelOpen (SshChannelTypeDirectTcpIp host port _h _p)
          senderChannel initialWindowSize maximumPacketSize ->
-           do startDirectTcp senderChannel initialWindowSize maximumPacketSize host port
+           do handleChannelOpenDirectTcp senderChannel initialWindowSize
+                maximumPacketSize host port
               connectionService
 
        SshMsgChannelOpen _ senderChannel _ _ ->
          do rejectChannelOpenRequest senderChannel
             connectionService
 
+       SshMsgChannelOpenConfirmation channelId_us channelId_them
+         initialWindowSize_them maximumPacket_them
+         | role == ServerRole -> fail "server does not open channels!"
+         | otherwise ->
+         do handleChannelOpenConfirmation channelId_us channelId_them
+              initialWindowSize_them maximumPacket_them
+            connectionService
+
        -- | RFC 4254 Section 6.5: client should ignore channel requests.
        SshMsgChannelRequest req chan wantReply
          | role == ClientRole -> connectionService
          | otherwise ->
-         do channelRequest req chan wantReply
+         do handleChannelRequest req chan wantReply
             connectionService
 
        SshMsgChannelData chan bytes ->
-         do channelData chan bytes
+         do handleChannelData chan bytes
             connectionService
 
        SshMsgChannelClose chan ->
-         do channelClose chan
+         do handleChannelClose chan
             connectionService
 
        SshMsgChannelEof chan ->
-         do channelEof chan
+         do handleChannelEof chan
             connectionService
 
        SshMsgChannelWindowAdjust chan adj ->
-         do windowAdjust chan adj
+         do handleChannelWindowAdjust chan adj
             connectionService
 
        SshMsgDisconnect reason _desc _lang ->
@@ -157,97 +189,98 @@ connectionService =
       connectionSend $
         SshMsgChannelOpenFailure senderChannel SshOpenAdministrativelyProhibited "" ""
 
--- TODO(conathan): unify with 'startDirectTcp' below; they're almost
--- identical.
-startSession :: Word32 -> Word32 -> Word32 -> Connection ()
-startSession senderChannel initialWindowSize maximumPacketSize =
-  do liftIO $ debug $
-       "starting session: channel: " ++ show senderChannel ++
-       ", window size: " ++ show initialWindowSize ++
-       ", packet size: " ++ show maximumPacketSize
 
-     channels <- connectionGetChannels
+-- | Handle a channel-open confirmation.
+handleChannelOpenConfirmation :: Word32 -> Word32 -> Word32 -> Word32 -> Connection ()
+handleChannelOpenConfirmation
+  channelId_us channelId_them initialWindowSize_them maximumPacket_them =
+  do channels <- connectionGetChannels
+     channel <- maybe (fail "no such channel!") return $
+       Map.lookup channelId_us channels
+     liftIO $ atomically $ writeTVar (sshChannelWindowSize_them channel)
+       initialWindowSize_them
+     let channel' = channel
+           { sshChannelId_them              = channelId_them
+           , sshChannelMaximumPacket_them = maximumPacket_them
+           }
+     connectionSetChannels (Map.insert channelId_us channel' channels)
+
+-- | Common code for opening a channel in a client or a server.
+channelOpenHelper :: Word32 -> Word32 -> Word32 -> Word32 -> Connection (Word32, SshChannel)
+channelOpenHelper channelId_them windowSize_them maximumPacket_them origWindowSize_us =
+  do channels <- connectionGetChannels
 
      events <- liftIO newChan
-     window <- liftIO $ newTVarIO initialWindowSize
+     window <- liftIO $ newTVarIO windowSize_them
 
      fifoSize      <- liftIO $ newTVarIO 0
      processedSize <- liftIO $ newTVarIO 0
 
-     let nextChannelId =
+     let nextChannelId_us =
            case Map.maxViewWithKey channels of
              Nothing        -> 0
              Just ((k,_),_) -> k+1
 
          channel = SshChannel
-                     { sshChannelRemote         = senderChannel
-                     , sshChannelThemWindowSize = window
-                     , sshChannelMaximumPacket  = maximumPacketSize
-                     , sshChannelEnv            = []
-                     , sshChannelPty            = Nothing
-                     , sshChannelEvents         = events
-                     , sshChannelOrigWindowSize = initialWindowSize
-                     , sshChannelFifoSize       = fifoSize
-                     , sshChannelProcessedSize  = processedSize
+                     { sshChannelId_them            = channelId_them
+                     , sshChannelWindowSize_them    = window
+                     , sshChannelMaximumPacket_them = maximumPacket_them
+                     , sshChannelEnv                = []
+                     , sshChannelPty                = Nothing
+                     , sshChannelEvents             = events
+                     , sshChannelOrigWindowSize_us  = origWindowSize_us
+                     , sshChannelFifoSize           = fifoSize
+                     , sshChannelProcessedSize      = processedSize
                      }
 
-     connectionSetChannels (Map.insert nextChannelId channel channels)
+     connectionSetChannels (Map.insert nextChannelId_us channel channels)
+     return (nextChannelId_us, channel)
 
+-- | Handle a channel-open request of session type.
+handleChannelOpenSession :: Word32 -> Word32 -> Word32 -> Connection ()
+handleChannelOpenSession channelId_them initialWindowSize_them maximumPacket_them =
+  do liftIO $ debug $
+       "starting session: channel: " ++ show channelId_them ++
+       ", window size: " ++ show initialWindowSize_them ++
+       ", packet size: " ++ show maximumPacket_them
+     (channelId_us, _) <- channelOpenHelper
+       channelId_them initialWindowSize_them maximumPacket_them
+       initialWindowSize_them
      -- In our response we offer them the same window size and max
      -- packet size that they offered we.
      connectionSend $
        SshMsgChannelOpenConfirmation
-         senderChannel
-         nextChannelId
-         initialWindowSize
-         maximumPacketSize
+         channelId_them
+         channelId_us
+         initialWindowSize_them
+         maximumPacket_them
 
-startDirectTcp :: Word32 -> Word32 -> Word32 -> S.ByteString -> Word32 -> Connection ()
-startDirectTcp senderChannel initialWindowSize maximumPacketSize host port =
-  do channels <- connectionGetChannels
-
-     events <- liftIO newChan
-     window <- liftIO $ newTVarIO initialWindowSize
-
-     fifoSize      <- liftIO $ newTVarIO 0
-     processedSize <- liftIO $ newTVarIO 0
-
-     let nextChannelId =
-           case Map.maxViewWithKey channels of
-             Nothing        -> 0
-             Just ((k,_),_) -> k+1
-
-         channel = SshChannel
-                     { sshChannelRemote         = senderChannel
-                     , sshChannelThemWindowSize = window
-                     , sshChannelMaximumPacket  = maximumPacketSize
-                     , sshChannelEnv            = []
-                     , sshChannelPty            = Nothing
-                     , sshChannelEvents         = events
-                     , sshChannelOrigWindowSize = initialWindowSize
-                     , sshChannelFifoSize       = fifoSize
-                     , sshChannelProcessedSize  = processedSize
-                     }
-
-     connectionSetChannels (Map.insert nextChannelId channel channels)
+-- | Handle a channel-open request of direct-tcp-ip type.
+handleChannelOpenDirectTcp :: Word32 -> Word32 -> Word32 -> S.ByteString -> Word32 -> Connection ()
+handleChannelOpenDirectTcp channelId_them initialWindowSize_them maximumPacket_them host port =
+  do (channelId_us, channel) <- channelOpenHelper
+       channelId_them initialWindowSize_them maximumPacket_them
+       initialWindowSize_them
 
      (client,state) <- Connection ask
-     success <- liftIO (cDirectTcp client host port events
+     success <- liftIO (cDirectTcp client host port (sshChannelEvents channel)
                           (channelWrite client state channel))
 
      connectionSend $
         if success
+               -- In our response we offer them the same window size and max
+               -- packet size that they offered we.
           then SshMsgChannelOpenConfirmation
-                 senderChannel
-                 nextChannelId
-                 initialWindowSize
-                 maximumPacketSize
+                 channelId_them
+                 channelId_us
+                 initialWindowSize_them
+                 maximumPacket_them
           else SshMsgChannelOpenFailure
-                 senderChannel SshOpenAdministrativelyProhibited "" ""
+                 channelId_them SshOpenAdministrativelyProhibited "" ""
 
 -- | Handle a window adjust request from them.
-windowAdjust :: Word32 -> Word32 -> Connection ()
-windowAdjust channelId adj =
+handleChannelWindowAdjust :: Word32 -> Word32 -> Connection ()
+handleChannelWindowAdjust channelId adj =
   do liftIO $ debug $
        "received window adjust: channel: " ++ show channelId ++
        ", adjust size: " ++ show adj
@@ -255,24 +288,24 @@ windowAdjust channelId adj =
      case Map.lookup channelId channels of
        Nothing -> fail "Bad channel!"
        Just channel ->
-         liftIO (atomically (modifyTVar' (sshChannelThemWindowSize channel) (+ adj)))
+         liftIO (atomically (modifyTVar' (sshChannelWindowSize_them channel) (+ adj)))
 
-channelEof :: Word32 -> Connection ()
-channelEof channelId =
+handleChannelEof :: Word32 -> Connection ()
+handleChannelEof channelId =
   do channels <- connectionGetChannels
      case Map.lookup channelId channels of
        Nothing -> fail "Bad channel!"
        Just channel ->
             liftIO (writeChan (sshChannelEvents channel) SessionEof)
 
-channelClose :: Word32 -> Connection ()
-channelClose channelId =
+handleChannelClose :: Word32 -> Connection ()
+handleChannelClose channelId =
   do channels <- connectionGetChannels
      case Map.lookup channelId channels of
        Nothing -> fail "Bad channel!"
        Just channel ->
          do liftIO (writeChan (sshChannelEvents channel) SessionClose)
-            connectionSend (SshMsgChannelClose (sshChannelRemote channel))
+            connectionSend (SshMsgChannelClose (sshChannelId_them channel))
             connectionSetChannels (Map.delete channelId channels)
 
 -- | Handle channel data from them.
@@ -289,14 +322,14 @@ channelClose channelId =
 -- if they overflow our window. This is stricter than the spec
 -- mandates: RFC 4254 Section 5.2 says only that "Both parties MAY
 -- ignore all extra data sent after the allowed window is empty."
-channelData :: Word32 -> S.ByteString -> Connection ()
-channelData channelId bytes =
+handleChannelData :: Word32 -> S.ByteString -> Connection ()
+handleChannelData channelId bytes =
   do channels <- connectionGetChannels
      case Map.lookup channelId channels of
        Nothing -> fail "Bad channel!"
        Just channel -> liftIO $ do
          overFlowed <- atomically $ do
-           let origWindowSize = sshChannelOrigWindowSize channel
+           let origWindowSize = sshChannelOrigWindowSize_us channel
            let dataSize       = fromIntegral $ S.length bytes
            oldFifoSize   <- readTVar (sshChannelFifoSize channel)
            processedSize <- readTVar (sshChannelProcessedSize channel)
@@ -323,8 +356,8 @@ channelData channelId bytes =
          then fail $ "they overflowed our window!"
          else writeChan (sshChannelEvents channel) (SessionData bytes)
 
-channelRequest :: SshChannelRequest -> Word32 -> Bool -> Connection ()
-channelRequest request channelId wantReply =
+handleChannelRequest :: SshChannelRequest -> Word32 -> Bool -> Connection ()
+handleChannelRequest request channelId wantReply =
   do channels <- connectionGetChannels
 
      case Map.lookup channelId channels of
@@ -334,8 +367,8 @@ channelRequest request channelId wantReply =
             when wantReply $
               connectionSend $
                 if result
-                  then SshMsgChannelSuccess (sshChannelRemote channel)
-                  else SshMsgChannelFailure (sshChannelRemote channel)
+                  then SshMsgChannelSuccess (sshChannelId_them channel)
+                  else SshMsgChannelFailure (sshChannelId_them channel)
 
 handleRequest :: SshChannelRequest -> Word32 -> SshChannel -> Connection Bool
 handleRequest request channelId channel = do
@@ -395,23 +428,23 @@ handleRequest request channelId channel = do
 -- | Write data to them, accounting for their window size.
 channelWrite :: Client -> SshState -> SshChannel -> Maybe S.ByteString -> IO ()
 channelWrite client state channel Nothing =
-  send client state (SshMsgChannelClose (sshChannelRemote channel))
+  send client state (SshMsgChannelClose (sshChannelId_them channel))
 
 channelWrite client state channel (Just msg)
   | S.null msg = return ()
   | otherwise =
      do sendSize <- atomically $
-          do window <- readTVar (sshChannelThemWindowSize channel)
+          do window <- readTVar (sshChannelWindowSize_them channel)
              when (window == 0) retry
-             let sendSize = minimum [ sshChannelMaximumPacket channel
+             let sendSize = minimum [ sshChannelMaximumPacket_them channel
                                     , window
                                     , fromIntegral (S.length msg)
                                     ]
-             writeTVar (sshChannelThemWindowSize channel) $!
+             writeTVar (sshChannelWindowSize_them channel) $!
                (window - sendSize)
              return (fromIntegral sendSize)
         let (current,next) = S.splitAt sendSize msg
-        send client state (SshMsgChannelData (sshChannelRemote channel) current)
+        send client state (SshMsgChannelData (sshChannelId_them channel) current)
         channelWrite client state channel (Just next)
 
 -- | Read a session event from them, accounting for window size.
@@ -423,7 +456,7 @@ channelRead client state channel = do
   case event of
     SessionData bs -> do
       windowAdjustSize <- atomically $ do
-        let origWindowSize   = sshChannelOrigWindowSize channel
+        let origWindowSize   = sshChannelOrigWindowSize_us channel
         let dataSize         = fromIntegral $ S.length bs
         oldProcessedSize    <- readTVar (sshChannelProcessedSize channel)
         let newProcessedSize = oldProcessedSize + dataSize
@@ -454,11 +487,11 @@ channelRead client state channel = do
 
       when (windowAdjustSize > 0) $ do
         debug $
-          "sent window adjust: channel: " ++ show (sshChannelRemote channel) ++
+          "sent window adjust: channel: " ++ show (sshChannelId_them channel) ++
           ", adjust size: " ++ show windowAdjustSize
         send client state
           (SshMsgChannelWindowAdjust
-            (sshChannelRemote channel) windowAdjustSize)
+            (sshChannelId_them channel) windowAdjustSize)
       return event
 
     _ -> return event

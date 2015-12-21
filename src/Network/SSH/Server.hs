@@ -59,7 +59,8 @@ sshServer sock = forever $
                                             "" "")
             Just (_user,svc) ->
               case svc of
-                SshConnection -> startConnectionService client state
+                SshConnection -> runConnection client state
+                                   connectionService
                 _             -> return ()
 
        `X.finally` (do
