@@ -2,6 +2,9 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE BangPatterns #-}
 
+----------------------------------------------------------------
+-- State data for one client-server pair, and many related types.
+
 module Network.SSH.State where
 
 
@@ -13,17 +16,20 @@ import           Network.SSH.Packet
 import           Network.SSH.PubKey (PrivateKey)
 import           Network.SSH.TerminalModes
 
-import           Data.Char (isControl)
-import           Data.IORef
-import           Data.Word
-import           Data.Serialize
 import           Control.Concurrent
+import           Control.Concurrent.STM ( TChan, TVar, newTVarIO )
 import           Control.Monad
+import           Crypto.Random
 import           Data.ByteString.Short (ShortByteString)
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Char8 as S8
 import qualified Data.ByteString.Lazy as L
-import           Crypto.Random
+import           Data.Char (isControl)
+import           Data.IORef
+import           Data.Map.Strict ( Map )
+import qualified Data.Map.Strict as Map
+import           Data.Serialize
+import           Data.Word
 
 debug :: String -> IO ()
 debug s = putStrLn $ "debug: " ++ s
@@ -48,6 +54,14 @@ data SessionEvent
 -- might make sense to call the other end the client, but that could
 -- be confusing since we also define client and server modules. Better
 -- to call it something else ...
+
+-- | A mix of connection state and session handlers.
+--
+-- The session handlers here -- 'cOpenShell', 'cDirectTcp',
+-- 'cRequestSubsystem', 'cRequestExec' -- are expected to return
+-- immediately with a boolean indicating whether the requested
+-- operation was allowed or not. So, implementers probably want to use
+-- 'forkIO' to run backends in a separate thread.
 data Client = Client
   -- | Read up to 'n' bytes from network socket
   { cGet         :: Int -> IO S.ByteString
@@ -63,12 +77,12 @@ data Client = Client
 
   -- | TERM, initial window dimensions, termios flags, incoming events, write callback
   , cOpenShell   :: S.ByteString -> SshWindowSize -> [(TerminalFlag, Word32)] ->
-                    Chan SessionEvent ->
+                    IO SessionEvent ->
                     (Maybe S.ByteString -> IO ()) ->
-                    IO ()
+                    IO Bool
 
   , cDirectTcp   :: S.ByteString -> Word32 ->
-                    Chan SessionEvent ->
+                    IO SessionEvent ->
                     (Maybe S.ByteString -> IO ()) ->
                     IO Bool
 
@@ -115,6 +129,7 @@ data Client = Client
                     IO AuthResult
   }
 
+----------------------------------------------------------------
 
 data Role = ClientRole | ServerRole
   deriving (Eq,Show)
@@ -146,10 +161,13 @@ usAndThem2c role us them = fst $ usAndThem2clientAndServer role us them
 usAndThem2s :: Role -> a -> a -> a
 usAndThem2s role us them = snd $ usAndThem2clientAndServer role us them
 
+----------------------------------------------------------------
 
-type CompressFun = S.ByteString -> IO L.ByteString
-type DecompressFun = CompressFun
+type CompressFun   = S.ByteString -> IO L.ByteString
+type DecompressFun = S.ByteString -> IO L.ByteString
+type ChannelId     = Word32
 
+-- | State for one client-server connection / transport.
 data SshState = SshState
   { sshRecvState :: !(IORef (Word32, Cipher, ActiveCipher, Mac, DecompressFun)) -- ^ Client context
   , sshBuf       :: !(IORef S.ByteString)
@@ -159,6 +177,11 @@ data SshState = SshState
   , sshAuthMethods   :: [ServerCredential]
   , sshIdents        :: !(IORef (SshIdent, SshIdent)) -- server, client
   , sshProposalPrefs :: SshProposalPrefs
+  -- | The channels running over this transport.
+  --
+  -- The outer 'TVar' protects insertion and deletion, and the inner
+  -- 'TVar' protects the state of an individual channel.
+  , sshChannels      :: !(TVar (Map ChannelId (TVar SshChannel)))
   }
 
 -- | Partial specification of an 'SshProposal'.
@@ -193,6 +216,7 @@ initialState prefs sshRole creds =
      sshIdents    <- newIORef (error "idents uninitialized")
      let sshAuthMethods   = creds
      let sshProposalPrefs = prefs
+     sshChannels <- newTVarIO Map.empty
      return SshState { .. }
 
 -- | Construct a new, random cookie
@@ -260,3 +284,34 @@ parseFrom handle buffer body =
        return a
 
   go _ (Fail s _) = fail s
+
+----------------------------------------------------------------
+-- Channels
+
+-- | The state of an SSH Channel.
+--
+-- Channel state is updated atomically, by manipulating 'TVar
+-- SshChannel's in the 'sshChannels' map in the 'SshState'. A channel
+-- also has an channel id for us, but that is stored separately as the
+-- key in the 'sshChannels' map.
+data SshChannel = SshChannel
+  { sshChannelId_them            :: Word32
+  , sshChannelEnv                :: [(S.ByteString,S.ByteString)]
+  , sshChannelWindowSize_them    :: Word32
+  , sshChannelMaximumPacket_them :: Word32
+  , sshChannelPty                :: (Maybe (S.ByteString, SshWindowSize, [(TerminalFlag, Word32)]))
+  , sshChannelEvents             :: TChan SessionEvent
+
+  -- | The original/max data window size.
+  , sshChannelOrigWindowSize_us :: Word32
+  -- | The number of bytes 'SessionEvent's in our 'sshChannelEvents'
+  -- FIFO.
+  , sshChannelFifoSize :: Word32
+  -- | The number of bytes from them that our session handler has
+  -- processed, but for which we have not sent them data window size
+  -- updates.
+  --
+  -- From their point of view, our (remaining) window size is
+  -- @sshChannelOrigWindowSize_us - sshChannelFifoSize -- sshChannelProcessedSize@.
+  , sshChannelProcessedSize :: Word32
+  }

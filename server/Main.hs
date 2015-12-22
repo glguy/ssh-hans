@@ -85,12 +85,12 @@ mkClient creds (h,_,_) = Client { .. }
   -- Same as 'exec echo' above, which you access in OpenSSH by running
   -- @ssh <host> echo@. To access this "echo" subsystem in OpenSSH,
   -- use @ssh <host> -s echo@.
-  cRequestSubsystem "echo" events writeback =
-    do void (forkIO (echoServer events writeback))
+  cRequestSubsystem "echo" readEvent writeback =
+    do void (forkIO (echoServer readEvent writeback))
        return True
   cRequestSubsystem _ _ _ = return False
 
-  cOpenShell term winsize termflags eventChannel writeBytes =
+  cOpenShell term winsize termflags readEvent writeBytes =
     do (masterFd, slaveFd) <-
          openpty
            Nothing
@@ -108,7 +108,7 @@ mkClient creds (h,_,_) = Client { .. }
                         unless (isIllegalOperation e) (throwIO e)
 
        void $ forkIO $
-         let loop = do event <- readChan eventChannel
+         let loop = do event <- readEvent
                        case event of
                          SessionEof -> loop
                          SessionClose -> closeFd slaveFd
@@ -130,8 +130,11 @@ mkClient creds (h,_,_) = Client { .. }
                       , Vty.termName = Just (S8.unpack term)
                       }
 
-       SetGame.gameMain config
-       hClose masterH
+       void $ forkIO $ do
+         SetGame.gameMain config
+         hClose masterH
+
+       return True
 
   -- Querying for support
   cAuthHandler _ _ _ (SshAuthPublicKey alg key Nothing) =
@@ -152,12 +155,12 @@ mkClient creds (h,_,_) = Client { .. }
        return (AuthFailed ["password","publickey"])
 
 echoServer :: IO SessionEvent -> (Maybe S.ByteString -> IO ()) -> IO ()
-echoServer read' write = loop
+echoServer readEvent write = loop
   where
   loop =
-    do event <- read'
+    do event <- readEvent
        case event of
-         SessionData xs -> write (Just xs) >> loop
-         SessionEof   -> write Nothing
-         SessionClose -> return ()
+         SessionData xs   -> write (Just xs) >> loop
+         SessionEof       -> write Nothing
+         SessionClose     -> return ()
          SessionWinsize{} -> loop
