@@ -1,3 +1,8 @@
+-- |
+-- Description: SSH channels
+--
+-- An implementation of SSH channels as described in
+-- /RFC 4254 SSH Connection Protocol/.
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
@@ -25,7 +30,7 @@ import           Control.Applicative
 #endif
 
 ----------------------
--- Connection operations
+-- * Connection operations
 ----------------------
 
 newtype Connection a = Connection
@@ -54,7 +59,7 @@ connectionLog msg = Connection $
      liftIO (cLog client msg)
 
 ----------------------------------------------------------------
--- Concurrency helpers for channel-state read and mutate.
+-- * Concurrency helpers for channel-state read and mutate.
 
 -- | Get 'TVar' channel by (our side) id.
 --
@@ -105,7 +110,7 @@ connectionModifyChannelWithResult c f = do
     return result
 
 ----------------------------------------------------------------
--- Client-oriented channel operations.
+-- * Client-oriented channel operations.
 
 -- | Send a channel-open request in a client.
 sendChannelOpenSession :: Connection ChannelId
@@ -128,7 +133,7 @@ sendChannelOpenSession = do
   return channelId_us
 
 ----------------------------------------------------------------
--- Main loop for receiving channel messages in a client or server.
+-- * Main loop for receiving channel messages in a client or server.
 
 -- | Listen for channel requests
 --
@@ -181,7 +186,7 @@ connectionService =
               initialWindowSize_them maximumPacket_them
             connectionService
 
-       -- | RFC 4254 Section 6.5: client should ignore channel requests.
+       -- RFC 4254 Section 6.5: client should ignore channel requests.
        SshMsgChannelRequest req chan wantReply
          | role == ClientRole -> connectionService
          | otherwise ->
@@ -450,7 +455,7 @@ handleChannelRequest request channelId wantReply = do
          return (channel, continuation)
 
 ----------------------------------------------------------------
--- Operations for communicating with them over channel.
+-- * Operations for communicating with them over channel.
 
 -- | Write data to them, accounting for their window size.
 --

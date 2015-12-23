@@ -99,7 +99,7 @@ sshClient clientSt = do
 --
 -- if you want to read a password from stdin, use
 --
---   @Just $ return "<pw>"@
+--   @Just $ return "\<pw\>"@
 --
 -- if you want to hardcode the password @<pw>@, and use 'Nothing' if
 -- you don't want to use passwords.
@@ -113,13 +113,15 @@ sshClient clientSt = do
 -- If the optional transport hook in @hook@ is not provided, then no
 -- transport hook is run.
 defaultClientState ::
-  String ->                              {- ^ software version           -}
-  String -> String -> Int ->
-  Handle ->                              {- ^ host connection            -}
-  Maybe (IO S.ByteString) ->             {- ^ optional password provider -}
-  Maybe FilePath ->                      {- ^ optional private key file  -}
-  Maybe SshProposalPrefs ->              {- ^ optional algorithm prefs   -}
-  Maybe (Client -> SshState -> IO ()) -> {- ^ optional transport hook    -}
+  String                              {- ^ software version           -} ->
+  String                              {- ^ user                       -} ->
+  String                              {- ^ host name                  -} ->
+  Int                                 {- ^ port                       -} ->
+  Handle                              {- ^ host connection            -} ->
+  Maybe (IO S.ByteString)             {- ^ optional password provider -} ->
+  Maybe FilePath                      {- ^ optional private key file  -} ->
+  Maybe SshProposalPrefs              {- ^ optional algorithm prefs   -} ->
+  Maybe (Client -> SshState -> IO ()) {- ^ optional transport hook    -} ->
   IO ClientState
 defaultClientState version user _host _port handle getPw keyFile prefs hook = do
   let csIdent = SshIdent $ S.pack ("SSH-2.0-" <> version)

@@ -1,9 +1,9 @@
+-- |
+-- State data for one client-server pair, and many related types.
+
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE BangPatterns #-}
-
-----------------------------------------------------------------
--- State data for one client-server pair, and many related types.
 
 module Network.SSH.State where
 
@@ -63,8 +63,8 @@ data SessionEvent
 -- operation was allowed or not. So, implementers probably want to use
 -- 'forkIO' to run backends in a separate thread.
 data Client = Client
-  -- | Read up to 'n' bytes from network socket
   { cGet         :: Int -> IO S.ByteString
+  -- ^ Read up to 'n' bytes from network socket
 
   -- | Put bytes on network socket
   , cPut         :: L.ByteString -> IO ()
