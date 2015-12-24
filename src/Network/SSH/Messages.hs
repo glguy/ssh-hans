@@ -88,10 +88,14 @@ data SshMsg = SshMsgDisconnect SshDiscReason !S.ByteString !S.ByteString
             | SshMsgDebug Bool !S.ByteString !S.ByteString
             | SshMsgServiceRequest SshService
             | SshMsgServiceAccept SshService
+
+            -- Shared secret establishment and server authentication.
             | SshMsgKexInit SshProposal
             | SshMsgNewKeys
             | SshMsgKexDhInit !S.ByteString
             | SshMsgKexDhReply SshPubCert !S.ByteString SshSig
+
+            -- Client authentication.
             | SshMsgUserAuthRequest !S.ByteString SshService SshAuthMethod
             | SshMsgUserAuthFailure
                  [ShortByteString] -- Supported methods
@@ -101,17 +105,25 @@ data SshMsg = SshMsgDisconnect SshDiscReason !S.ByteString !S.ByteString
                  !SshPubCert   -- key blob
             | SshMsgUserAuthSuccess
             | SshMsgUserAuthBanner !S.ByteString !S.ByteString
+
+            -- Channel independent global requests and replies.
             | SshMsgGlobalRequest !S.ByteString !Bool !S.ByteString
             | SshMsgRequestSuccess !S.ByteString
             | SshMsgRequestFailure
+
+            -- Channel creation requests and replies.
             | SshMsgChannelOpen !SshChannelType !Word32 !Word32 !Word32
             | SshMsgChannelOpenConfirmation !Word32 !Word32 !Word32 !Word32
             | SshMsgChannelOpenFailure !Word32 !SshOpenFailure !S.ByteString !S.ByteString
+
+            -- Channel-specific data-related messages.
             | SshMsgChannelWindowAdjust !Word32 !Word32
             | SshMsgChannelData !Word32 !S.ByteString
             | SshMsgChannelExtendedData !Word32 !Word32 !S.ByteString
             | SshMsgChannelEof !Word32
             | SshMsgChannelClose !Word32
+
+            -- Channel-specific requests and replies.
             | SshMsgChannelRequest !SshChannelRequest !Word32 !Bool
             | SshMsgChannelSuccess !Word32
             | SshMsgChannelFailure !Word32
@@ -164,6 +176,15 @@ data SshChannelRequest
   | SshChannelRequestSubsystem !S.ByteString
   | SshChannelRequestWindowChange !SshWindowSize
   deriving (Read,Show,Eq,Ord)
+
+sshChannelRequestTag :: SshChannelRequest -> SshChannelRequestTag
+sshChannelRequestTag request = case request of
+  SshChannelRequestPtyReq {}       -> SshChannelRequestTagPtyReq
+  SshChannelRequestEnv {}          -> SshChannelRequestTagEnv
+  SshChannelRequestShell {}        -> SshChannelRequestTagShell
+  SshChannelRequestExec {}         -> SshChannelRequestTagExec
+  SshChannelRequestSubsystem {}    -> SshChannelRequestTagSubsystem
+  SshChannelRequestWindowChange {} -> SshChannelRequestTagWindowChange
 
 data SshWindowSize = SshWindowSize
   { sshWsCols, sshWsRows, sshWsX, sshWsY :: !Word32 }
@@ -297,6 +318,12 @@ data SshChannelType
   | SshChannelTypeDirectTcpIp S.ByteString Word32 S.ByteString Word32
   deriving (Read,Show,Eq,Ord)
 
+sshChannelTypeTag :: SshChannelType -> SshChannelTypeTag
+sshChannelTypeTag tp = case tp of
+  SshChannelTypeSession          -> SshChannelTypeTagSession
+  SshChannelTypeX11{}            -> SshChannelTypeTagX11
+  SshChannelTypeForwardedTcpIp{} -> SshChannelTypeTagForwardedTcpIp
+  SshChannelTypeDirectTcpIp{}    -> SshChannelTypeTagDirectTcpIp
 
 
 -- Rendering -------------------------------------------------------------------
@@ -358,7 +385,7 @@ putSshMsg msg =
                                                                                 -- response specific data
        SshMsgRequestSuccess bytes       -> putByteString bytes -- response specific data
        SshMsgRequestFailure             -> return ()
-       SshMsgChannelOpen             {} -> fail "unimplemented"
+       SshMsgChannelOpen tp id' win pkt -> putChannelOpen tp id' win pkt
        SshMsgChannelOpenConfirmation chan1 chan2 win maxPack -> putWord32be chan1 >> putWord32be chan2 >>
                                                                 putWord32be win   >> putWord32be maxPack
        SshMsgChannelOpenFailure c r d l -> putWord32be c >> putWord32be (openFailureToCode r) >>
@@ -368,7 +395,7 @@ putSshMsg msg =
        SshMsgChannelExtendedData chan code bytes -> putWord32be chan >> putWord32be code >> putString bytes
        SshMsgChannelEof chan            -> putWord32be chan
        SshMsgChannelClose chan          -> putWord32be chan
-       SshMsgChannelRequest          {} -> fail "unimplemented"
+       SshMsgChannelRequest req id' rep -> putChannelRequest req id' rep
        SshMsgChannelSuccess chan        -> putWord32be chan
        SshMsgChannelFailure chan        -> putWord32be chan
 
@@ -555,6 +582,81 @@ putUserAuthPkOk alg key =
 
 putSessionId :: Putter SshSessionId
 putSessionId (SshSessionId sessionId) = putString sessionId
+
+putChannelOpen :: SshChannelType -> Word32 -> Word32 -> Word32 -> Put
+putChannelOpen tp id_us windowSize maxPacket = do
+  putSshChannelType tp
+  putWord32be id_us
+  putWord32be windowSize
+  putWord32be maxPacket
+
+putSshChannelType :: Putter SshChannelType
+putSshChannelType tp = do
+  putSshChannelTypeTag $ sshChannelTypeTag tp
+  case tp of
+    SshChannelTypeSession -> return ()
+    SshChannelTypeX11 address port -> do
+      putString address
+      putWord32be port
+    SshChannelTypeForwardedTcpIp address1 port1 address2 port2 -> do
+      putString address1
+      putWord32be port1
+      putString address2
+      putWord32be port2
+    SshChannelTypeDirectTcpIp address1 port1 address2 port2 -> do
+      putString address1
+      putWord32be port1
+      putString address2
+      putWord32be port2
+
+putSshChannelTypeTag :: Putter SshChannelTypeTag
+putSshChannelTypeTag tag = putString $ case tag of
+  SshChannelTypeTagSession        -> "session"
+  SshChannelTypeTagX11            -> "x11"
+  SshChannelTypeTagForwardedTcpIp -> "forwarded-tcpip"
+  SshChannelTypeTagDirectTcpIp    -> "direct-tcpip"
+
+putChannelRequest :: SshChannelRequest -> Word32 -> Bool -> Put
+putChannelRequest request channelId_them wantReply = do
+  putWord32be channelId_them
+  putChannelRequestTag $ sshChannelRequestTag request
+  putBoolean wantReply
+  case request of
+    SshChannelRequestPtyReq term winsize modes -> do
+      putString term
+      putWindowSize winsize
+      putString modes
+    SshChannelRequestEnv name value -> do
+      putString name
+      putString value
+    SshChannelRequestShell -> return ()
+    SshChannelRequestExec cmd ->
+      putString cmd
+    SshChannelRequestSubsystem subsystem ->
+      putString subsystem
+    SshChannelRequestWindowChange winsize ->
+      putWindowSize winsize
+
+putWindowSize :: Putter SshWindowSize
+putWindowSize (SshWindowSize c r x y) = do
+  putWord32be c
+  putWord32be r
+  putWord32be x
+  putWord32be y
+
+putChannelRequestTag :: Putter SshChannelRequestTag
+putChannelRequestTag tag = putString $ case tag of
+  SshChannelRequestTagPtyReq       -> "pty-req"
+  SshChannelRequestTagX11Req       -> "x11-req"
+  SshChannelRequestTagEnv          -> "env"
+  SshChannelRequestTagShell        -> "shell"
+  SshChannelRequestTagExec         -> "exec"
+  SshChannelRequestTagSubsystem    -> "subsystem"
+  SshChannelRequestTagWindowChange -> "window-change"
+  SshChannelRequestTagXonXoff      -> "xon-xoff"
+  SshChannelRequestTagSignal       -> "signal"
+  SshChannelRequestTagExitStatus   -> "exit-status"
+  SshChannelRequestTagExitSignal   -> "exit-signal"
 
 -- Parsing ---------------------------------------------------------------------
 
