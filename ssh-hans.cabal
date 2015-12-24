@@ -74,6 +74,7 @@ executable client
                        network      >=2.6.2.1  && <2.7,
                        unix         >=2.7.0.1  && <2.8,
                        vty          >=5.4      && <5.5,
+                       async        >=2.0.2    && <2.3,
                        ssh-hans
 
     hs-source-dirs:    client

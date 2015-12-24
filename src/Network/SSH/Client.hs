@@ -25,7 +25,7 @@ import           Network.SSH.Rekey
 import           Network.SSH.Server ( sayHello )
 import           Network.SSH.State
 
-import           Control.Concurrent.Async ( async, wait )
+import           Control.Concurrent.Async ( async )
 import qualified Control.Exception as X
 import           Control.Monad ( when, void )
 import qualified Data.ByteString.Char8 as S
@@ -57,6 +57,8 @@ data ClientState = ClientState
     -- | Optional hook to run after transport is setup, but before
     -- auth.
   , csTransportHook :: Maybe (Client -> SshState -> IO ())
+    -- | Optional hook to run after the channel loop is running.
+  , csChannelHook :: Maybe (Client -> SshState -> IO ())
   }
 
 -- | Run an SSh client.
@@ -83,28 +85,15 @@ sshClient clientSt = do
   authenticate state clientSt client
   debug "auth done!"
 
-  debug "creating a session channel ..."
+  debug "starting channel loop ..."
   void . async $ runConnection client state connectionService
-  (readEvent, write) <- runConnection client state $ do
-    id_us <- sendChannelOpenSession
-    sendChannelRequestSubsystem id_us "echo" -- TODO(conathan): make this configurable
-  debug "created session channel!"
+  debug "channel loop started!"
 
-  debug "starting echo loop ..."
-  let echoLoop :: Integer -> IO ()
-      echoLoop n = do
-        let msg = S.pack (show n)
-        debug $ "sending: " ++ S.unpack msg
-        write (Just msg)
-        SessionData bs <- readEvent
-        debug $ "reading: " ++ S.unpack bs
-        echoLoop (n+1)
-  -- We don't actually need to run the echo loop asynchronously in
-  -- this example, but we would e.g. to run a session channel and an
-  -- SSH channel at the same time.
-  echoThread <- async $ echoLoop 0
-  void $ wait echoThread
-  debug "echo loop finished" -- We might be waiting a while ...
+  debug "running channel hook ..."
+  maybe (return ()) (\f -> f client state)
+    (csChannelHook clientSt)
+  debug "channel hook finished!"
+  debug "exiting ..."
 
 -- | Make a client state with reasonable defaults.
 --
@@ -146,15 +135,18 @@ defaultClientState ::
   Maybe FilePath                      {- ^ optional private key file  -} ->
   Maybe SshProposalPrefs              {- ^ optional algorithm prefs   -} ->
   Maybe (Client -> SshState -> IO ()) {- ^ optional transport hook    -} ->
+  Maybe (Client -> SshState -> IO ()) {- ^ optional channel hook      -} ->
   IO ClientState
-defaultClientState version user _host _port handle getPw keyFile prefs hook = do
+defaultClientState version user _host _port handle getPw
+  keyFile prefs transportHook channelHook = do
   let csIdent = SshIdent $ S.pack ("SSH-2.0-" <> version)
   let csNet   = mkDefaultClient handle
   let csUser  = S.pack user
   let csGetPw = getPw
   csKeys     <- maybe (return []) loadPrivateKeys keyFile
   let csAlgs  = maybe allAlgsSshProposalPrefs id prefs
-  let csTransportHook = hook
+  let csTransportHook = transportHook
+  let csChannelHook   = channelHook
   return ClientState{..}
 
 mkDefaultClient :: Handle -> Client

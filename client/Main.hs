@@ -5,8 +5,9 @@
 
 module Main where
 
-import           Network.SSH.Messages
 import           Network.SSH.Client
+import           Network.SSH.Connection
+import           Network.SSH.Messages
 import           Network.SSH.Rekey
 import           Network.SSH.State
 
@@ -15,9 +16,9 @@ import           Network
                    ( PortID(..), HostName, PortNumber, Socket
                    , connectTo, withSocketsDo )
 
-import           Control.Concurrent
+import           Control.Concurrent.Async
 import           Control.Exception
-import           Control.Monad ( forever, when, (<=<) )
+import           Control.Monad ( forever, void, when, (<=<) )
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Short as Short
 import qualified Data.ByteString.Char8 as S8
@@ -79,9 +80,12 @@ main = do
   let version = "SSH-HANS-Client"
   let getPw   = Just $ defaultGetPassword user host
   let prefs   = Just proposalPrefs
-  let hook    = Nothing
+  let transportHook = Nothing
+  let channelHook   = Just $ echoChannelHook 100
+
   clientSt   <- defaultClientState
-                  version user host port handle getPw keyFile prefs hook
+                  version user host port handle getPw
+                  keyFile prefs transportHook channelHook
   sshClient clientSt
   -- Might be useful for sending keys to server later.
   {-
@@ -90,6 +94,32 @@ main = do
      user    <- getEnv "USER"
      let creds = [(S8.pack user,pubKeys)]
   -}
+
+echoChannelHook :: Integer -> Client -> SshState -> IO ()
+echoChannelHook stop client state = do
+  debug "creating a session channel ..."
+  (readEvent, write) <- runConnection client state $ do
+    id_us <- sendChannelOpenSession
+    sendChannelRequestSubsystem id_us "echo"
+  debug "created session channel!"
+
+  debug "starting echo loop ..."
+  let echoLoop :: Integer -> IO ()
+      echoLoop n
+        | stop == n = write Nothing
+        | otherwise = do
+        let msg = S8.pack (show n)
+        debug $ "sending: " ++ S8.unpack msg
+        write (Just msg)
+        SessionData bs <- readEvent
+        debug $ "reading: " ++ S8.unpack bs
+        echoLoop (n+1)
+  -- We don't actually need to run the echo loop asynchronously in
+  -- this example, but we would e.g. to run a session channel and an
+  -- SSH channel at the same time.
+  echoThread <- async $ echoLoop 0
+  void $ wait echoThread
+  debug "echo loop finished" -- We might be waiting a while ...
 
 proposalPrefs :: SshProposalPrefs
 proposalPrefs = allAlgsSshProposalPrefs
