@@ -41,11 +41,29 @@ data AuthResult
   | AuthAccepted
   | AuthPkOk S.ByteString SshPubCert
 
+-- We might want to split this into separate types for separate
+-- classes of channel events.
 data SessionEvent
-  = SessionData S.ByteString
+  -- Data messages.
+  = SessionData S.ByteString               -- Needs window size accounting.
+  {-
+  | SessionExtendedDataStdErr S.ByteString -- Needs window size accounting.
+  -}
+
+  -- Could be considered data or non-data.
   | SessionClose
   | SessionEof
+
+  -- Non-data messages.
+  --
+  -- May also want request messages here, in addition to request
+  -- responses.
   | SessionWinsize SshWindowSize
+  | SessionRequestResponse Bool -- ^ True for "channel success"
+                                --   and false for "channel failure".
+  {-
+  | SessionRequest {}
+  -}
 
 -- TODO(conathan): rename, e.g 'ClientState', since we are adding
 -- client support. Or maybe, refactor this into client specific state
@@ -57,11 +75,11 @@ data SessionEvent
 
 -- | A mix of connection state and session handlers.
 --
--- The session handlers here -- 'cOpenShell', 'cDirectTcp',
+-- The session backends here -- 'cOpenShell', 'cDirectTcp',
 -- 'cRequestSubsystem', 'cRequestExec' -- are expected to return
 -- immediately with a boolean indicating whether the requested
 -- operation was allowed or not. So, implementers probably want to use
--- 'forkIO' to run backends in a separate thread.
+-- 'forkIO' to run session backends in a separate thread.
 data Client = Client
   { cGet         :: Int -> IO S.ByteString
   -- ^ Read up to 'n' bytes from network socket
@@ -288,6 +306,29 @@ parseFrom handle buffer body =
 ----------------------------------------------------------------
 -- Channels
 
+-- | Channel states.
+--
+-- These states were created with "session" channels in mind, and may
+-- need to refined to handle other channel types. For example,
+-- requesting a session backend on a non-session channel does not make
+-- sense.
+data SshChannelState
+  = SshChannelStateOpenRequested    -- ^ Open request sent.
+  | SshChannelStateOpenFailed SshOpenFailure S.ByteString S.ByteString
+                                    -- ^ Open request sent and rejection received.
+  | SshChannelStateOpen             -- ^ Open confirmation received or sent. We also enter
+                                    --   this state from "backend requested" if the backend
+                                    --   request fails.
+  | SshChannelStateBackendRequested -- ^ Backend ("shell", "exec", or "subsystem")
+                                    --   request sent
+  | SshChannelStateBackendRunning   -- ^ Backend request confirmation received.
+  deriving (Eq, Show)
+{-
+  | SshChannelStateCloseSent        -- ^ A channel close has been sent.
+  | SshChannelStateClosed           -- ^ A channel close has been received.
+-}
+-- | SshChannelStateError
+
 -- | The state of an SSH Channel.
 --
 -- Channel state is updated atomically, by manipulating 'TVar
@@ -295,7 +336,9 @@ parseFrom handle buffer body =
 -- also has an channel id for us, but that is stored separately as the
 -- key in the 'sshChannels' map.
 data SshChannel = SshChannel
-  { sshChannelId_them            :: Word32
+  { sshChannelState              :: SshChannelState
+
+  , sshChannelId_them            :: Word32
   , sshChannelEnv                :: [(S.ByteString,S.ByteString)]
   , sshChannelWindowSize_them    :: Word32
   , sshChannelMaximumPacket_them :: Word32

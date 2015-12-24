@@ -15,17 +15,19 @@ module Network.SSH.Client (
   , sshClient
   ) where
 
+import           Network.SSH.Connection
 import           Network.SSH.Messages
 import           Network.SSH.Named
 import           Network.SSH.Packet
 import           Network.SSH.PrivateKeyFormat
 import           Network.SSH.PubKey
 import           Network.SSH.Rekey
-import           Network.SSH.State
 import           Network.SSH.Server ( sayHello )
+import           Network.SSH.State
 
+import           Control.Concurrent.Async ( async, wait )
 import qualified Control.Exception as X
-import           Control.Monad ( when )
+import           Control.Monad ( when, void )
 import qualified Data.ByteString.Char8 as S
 import qualified Data.ByteString.Lazy as L
 import qualified Data.ByteString.Short as Short
@@ -68,7 +70,6 @@ sshClient clientSt = do
   let v_c = csIdent clientSt
   let client = csNet clientSt
   v_s <- sayHello state client v_c
-  debug $ "server version: " ++ show v_s
   writeIORef (sshIdents state) (v_s,v_c)
 
   debug "starting key exchange ..."
@@ -81,6 +82,29 @@ sshClient clientSt = do
   debug "starting auth ..."
   authenticate state clientSt client
   debug "auth done!"
+
+  debug "creating a session channel ..."
+  void . async $ runConnection client state connectionService
+  (readEvent, write) <- runConnection client state $ do
+    id_us <- sendChannelOpenSession
+    sendChannelRequestSubsystem id_us "echo" -- TODO(conathan): make this configurable
+  debug "created session channel!"
+
+  debug "starting echo loop ..."
+  let echoLoop :: Integer -> IO ()
+      echoLoop n = do
+        let msg = S.pack (show n)
+        debug $ "sending: " ++ S.unpack msg
+        write (Just msg)
+        SessionData bs <- readEvent
+        debug $ "reading: " ++ S.unpack bs
+        echoLoop (n+1)
+  -- We don't actually need to run the echo loop asynchronously in
+  -- this example, but we would e.g. to run a session channel and an
+  -- SSH channel at the same time.
+  echoThread <- async $ echoLoop 0
+  void $ wait echoThread
+  debug "echo loop finished" -- We might be waiting a while ...
 
 -- | Make a client state with reasonable defaults.
 --
@@ -101,7 +125,7 @@ sshClient clientSt = do
 --
 --   @Just $ return "\<pw\>"@
 --
--- if you want to hardcode the password @<pw>@, and use 'Nothing' if
+-- if you want to hardcode the password @\<pw\>@, and use 'Nothing' if
 -- you don't want to use passwords.
 --
 -- If the optional key file in @keyFile@ is not provided, then the

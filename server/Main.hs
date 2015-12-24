@@ -118,6 +118,7 @@ mkClient creds (h,_,_) = Client { .. }
                          SessionData bs ->
                            do S.hPut masterH bs
                               loop
+                         SessionRequestResponse{} -> loop
          in loop
 
        let config = Vty.Config
@@ -164,3 +165,4 @@ echoServer readEvent write = loop
          SessionEof       -> write Nothing
          SessionClose     -> return ()
          SessionWinsize{} -> loop
+         SessionRequestResponse{} -> loop

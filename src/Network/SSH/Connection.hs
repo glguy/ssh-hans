@@ -3,6 +3,10 @@
 --
 -- An implementation of SSH channels as described in
 -- /RFC 4254 SSH Connection Protocol/.
+--
+-- Throughout this module we use "session backend" to refer to a
+-- handler for "exec", "shell", or "subsystem" requests on a session
+-- channel.
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
@@ -18,9 +22,10 @@ import           Network.SSH.TerminalModes
 import           Control.Concurrent.STM
 import           Control.Monad
 
-import           Data.Word
-import qualified Data.Map as Map
 import qualified Data.ByteString as S
+import qualified Data.ByteString.Char8 as C8
+import qualified Data.Map as Map
+import           Data.Word
 
 import           Control.Monad.IO.Class
 import           Control.Monad.Trans.Reader (ask, ReaderT(..), runReaderT)
@@ -113,6 +118,12 @@ connectionModifyChannelWithResult c f = do
 -- * Client-oriented channel operations.
 
 -- | Send a channel-open request in a client.
+--
+-- TODO(conathan): if we instead returned a 'TVar SshChannel' here,
+-- and maybe embedded our channel id in the 'SshChannel', we'd be free
+-- to delete a channel from the channel map without worrying a client
+-- later looking it up by id and failing. In any case, we need a
+-- better story around closing and cleaning up channels.
 sendChannelOpenSession :: Connection ChannelId
 sendChannelOpenSession = do
   -- Some of the channel state corresponding to them is not defined
@@ -125,12 +136,65 @@ sendChannelOpenSession = do
   let windowSize_them    = error "sendChannelOpen: bug: window_them!"
   let channelId_them     = error "sendChannelOpen: bug: channel_them!"
   let maximumPacket_them = error "sendChannelOpen: bug: max_packet_them!"
-  channelId_us <- channelOpenHelper
+  channelId_us <- channelOpenHelper SshChannelStateOpenRequested
     channelId_them windowSize_them maximumPacket_them origWindowSize_us
   connectionSend
     (SshMsgChannelOpen SshChannelTypeSession
       channelId_us origWindowSize_us maximumPacket_us)
-  return channelId_us
+
+  -- Wait for them to confirm or reject the channel open before
+  -- continuing.
+  channelTVar  <- connectionGetChannelTVar channelId_us
+  channelState <- liftIO . atomically $ do
+    channelState <- sshChannelState <$> readTVar channelTVar
+    when (channelState == SshChannelStateOpenRequested) retry
+    return channelState
+  case channelState of
+    SshChannelStateOpen -> do
+      liftIO . debug $ "opened session: channel: " ++ show channelId_us
+      return channelId_us
+    SshChannelStateOpenFailed reason desc _lang ->
+      fail $ "channel-open request rejected: reason code: " ++
+             show reason ++ ", reason string: " ++ C8.unpack desc
+    _ -> fail $ "unexpected channel state: " ++ show channelState
+
+-- | Send them a subsystem request on an existing session channel.
+--
+-- Returns read and write functions for interacting with them via the
+-- channel. Sending 'Nothing' to the write function closes the
+-- channel.
+sendChannelRequestSubsystem ::
+  ChannelId  -> S.ByteString ->
+  Connection (IO SessionEvent, Maybe S.ByteString -> IO ())
+sendChannelRequestSubsystem id_us subsystem = do
+  liftIO . debug $ "requesting subsystem: channel: " ++ show id_us ++
+                   ", subsystem: " ++ C8.unpack subsystem
+  channel <- connectionGetChannel id_us
+  when (sshChannelState channel /= SshChannelStateOpen) $
+    fail "channel state incompatible with subsystem request!"
+
+  -- Set state to "subsystem requested" *before* actually sending the
+  -- request, since otherwise there would be a race condition between
+  -- setting the channel state and receiving the subsystem request
+  -- confirmation from them.
+  connectionModifyChannel id_us $ \channel' ->
+    channel' { sshChannelState = SshChannelStateBackendRequested }
+  connectionSend $
+    SshMsgChannelRequest (SshChannelRequestSubsystem subsystem)
+      (sshChannelId_them channel) True
+
+  -- Wait for them to confirm or reject the request.
+  channelTVar  <- connectionGetChannelTVar id_us
+  channelState <- liftIO . atomically $ do
+    channelState <- sshChannelState <$> readTVar channelTVar
+    when (channelState == SshChannelStateBackendRequested) retry
+    return channelState
+  when (channelState /= SshChannelStateBackendRunning) $
+    fail "subsystem request failed!"
+  (client, state) <- Connection ask
+  return ( channelRead client state id_us
+         , channelWrite client state id_us
+         )
 
 ----------------------------------------------------------------
 -- * Main loop for receiving channel messages in a client or server.
@@ -179,18 +243,36 @@ connectionService =
             connectionService
 
        SshMsgChannelOpenConfirmation channelId_us channelId_them
-         initialWindowSize_them maximumPacket_them
-         | role == ServerRole -> fail "server does not open channels!"
-         | otherwise ->
+         initialWindowSize_them maximumPacket_them ->
          do handleChannelOpenConfirmation channelId_us channelId_them
               initialWindowSize_them maximumPacket_them
             connectionService
 
-       -- RFC 4254 Section 6.5: client should ignore channel requests.
+       SshMsgChannelOpenFailure id_us reason desc lang ->
+         do handleChannelOpenFailure id_us reason desc lang
+            connectionService
+
+       -- RFC 4254 Section 6.2, 6.5: client should ignore *some*
+       -- channel requests.
+       --
+       -- We're actually ignoring *all* channel requests, so we may
+       -- want to relax this later.
        SshMsgChannelRequest req chan wantReply
-         | role == ClientRole -> connectionService
+         | role == ClientRole ->
+         do liftIO . debug $
+              "ignoring channel request received in client: channel" ++ show chan ++
+              ", request type: " ++ show (sshChannelRequestTag req) ++
+              ", want reply: " ++ show wantReply
+            connectionService
          | otherwise ->
          do handleChannelRequest req chan wantReply
+            connectionService
+
+       SshMsgChannelSuccess chan ->
+         do handleChannelSuccessOrFailure True chan
+            connectionService
+       SshMsgChannelFailure chan ->
+         do handleChannelSuccessOrFailure False chan
             connectionService
 
        SshMsgChannelData chan bytes ->
@@ -227,18 +309,78 @@ connectionService =
 -- | Handle a channel-open confirmation.
 handleChannelOpenConfirmation :: ChannelId -> ChannelId -> Word32 -> Word32 -> Connection ()
 handleChannelOpenConfirmation
-  channelId_us channelId_them initialWindowSize_them maximumPacket_them =
-  connectionModifyChannel channelId_us $ \channel ->
-   channel
-     { sshChannelId_them            = channelId_them
-     , sshChannelMaximumPacket_them = maximumPacket_them
-     , sshChannelWindowSize_them    = initialWindowSize_them
-     }
+  channelId_us channelId_them initialWindowSize_them maximumPacket_them = do
+  success <- connectionModifyChannelWithResult channelId_us $ \channel ->
+   if sshChannelState channel == SshChannelStateOpenRequested
+   then do
+     let channel' = channel
+           { sshChannelState              = SshChannelStateOpen
+           , sshChannelId_them            = channelId_them
+           , sshChannelMaximumPacket_them = maximumPacket_them
+           , sshChannelWindowSize_them    = initialWindowSize_them
+           }
+     return (channel', True)
+   else
+     return (channel, False)
+
+  when (not success) $
+    fail $ "unexpected channel-open confirmation: channel: " ++ show channelId_us
+
+-- | Handle a channel-open failure.
+--
+-- It's up to the channel opener to display the rejection reason.
+handleChannelOpenFailure ::
+  ChannelId -> SshOpenFailure -> S.ByteString -> S.ByteString -> Connection ()
+handleChannelOpenFailure id_us reason description language = do
+  connectionModifyChannel id_us $ \channel ->
+    channel { sshChannelState = SshChannelStateOpenFailed reason description language }
+
+-- | Handle request success ('True') or failure ('False').
+--
+-- Our treatment depends on the state of the channel:
+--
+-- - if a session backend is already running, then we assume the
+--   request was generated by the backend and we pass the response to
+--   the backend.
+--
+-- - if a session backend has been requested, then we update the state
+--   back to "open", to indicate failure. We might instead want a
+--   separate "backend request failed" state to avoid any possible
+--   ambiguity.
+handleChannelSuccessOrFailure :: Bool -> ChannelId -> Connection ()
+handleChannelSuccessOrFailure success id_us = do
+  channel <- connectionGetChannel id_us
+  let channelState = sshChannelState channel
+  liftIO . debug $
+    "channel-request response: channel " ++ show id_us ++
+    ", response: " ++ (if success then "success" else "failure") ++
+    ", state: " ++ show channelState
+
+  case channelState of
+    SshChannelStateBackendRunning -> do
+      let events = sshChannelEvents channel
+      liftIO . atomically $
+        writeTChan events (SessionRequestResponse success)
+    SshChannelStateBackendRequested ->
+      connectionModifyChannel id_us $ \channel' ->
+        channel' { sshChannelState = if success
+                                     then SshChannelStateBackendRunning
+                                     else SshChannelStateOpen
+                 }
+    -- TODO(conathan): This is wrong for clients sending e.g. "env"
+    -- requests or "pty" requests before requesting a session
+    -- backend. In those cases we would be in "open" state. We could
+    -- track both requests and responses, in order to match them up
+    -- more easily: the responses are required to come in order, altho
+    -- non-request/response messages may be interspersed.
+    _ -> fail $ "received channel-request in unexpected channel state: " ++
+                show channelState
 
 -- | Common code for opening a channel in a client or a server.
 channelOpenHelper ::
-  ChannelId -> Word32 -> Word32 -> Word32 -> Connection ChannelId
-channelOpenHelper channelId_them windowSize_them maximumPacket_them origWindowSize_us =
+  SshChannelState -> ChannelId -> Word32 -> Word32 -> Word32 ->
+  Connection ChannelId
+channelOpenHelper initialState' channelId_them windowSize_them maximumPacket_them origWindowSize_us =
   do (_, state) <- Connection ask
      liftIO . atomically $ do
        channels <- readTVar $ sshChannels state
@@ -250,7 +392,8 @@ channelOpenHelper channelId_them windowSize_them maximumPacket_them origWindowSi
                Just ((k,_),_) -> k+1
 
            channel = SshChannel
-                       { sshChannelId_them            = channelId_them
+                       { sshChannelState              = initialState'
+                       , sshChannelId_them            = channelId_them
                        , sshChannelWindowSize_them    = windowSize_them
                        , sshChannelMaximumPacket_them = maximumPacket_them
                        , sshChannelEnv                = []
@@ -273,7 +416,7 @@ handleChannelOpenSession channelId_them initialWindowSize_them maximumPacket_the
        "starting session: channel: " ++ show channelId_them ++
        ", window size: " ++ show initialWindowSize_them ++
        ", packet size: " ++ show maximumPacket_them
-     channelId_us <- channelOpenHelper
+     channelId_us <- channelOpenHelper SshChannelStateOpen
        channelId_them initialWindowSize_them maximumPacket_them
        initialWindowSize_them
      -- In our response we offer them the same window size and max
@@ -288,7 +431,7 @@ handleChannelOpenSession channelId_them initialWindowSize_them maximumPacket_the
 -- | Handle a channel-open request of direct-tcp-ip type.
 handleChannelOpenDirectTcp :: ChannelId -> Word32 -> Word32 -> S.ByteString -> Word32 -> Connection ()
 handleChannelOpenDirectTcp channelId_them initialWindowSize_them maximumPacket_them host port =
-  do channelId_us <- channelOpenHelper
+  do channelId_us <- channelOpenHelper SshChannelStateOpen
        channelId_them initialWindowSize_them maximumPacket_them
        initialWindowSize_them
 
@@ -376,6 +519,30 @@ handleChannelData channelId bytes =
      when overFlowed $
        fail $ "they overflowed our window!"
 
+-- | Handle a channel-request msg.
+--
+-- The allowable channel requests and their implications are
+-- complicated. For example:
+--
+-- - an X11 forwarding request (not implemented below) must be sent on
+--   a session channel before and X11 channel can be opened separately
+--   (RFC 4254 Section 6.3).
+--
+-- - only one "shell", "exec", or "subsystem" session-backend request
+--   can be sent on a session channel during its lifetime.
+--
+-- - sending "env" requests after a session backend has been started
+--   probably doesn't make sense (RFC 4254 Section 6.4: "Environment
+--   variables may be passed to the shell/command to be started
+--   *later*.")
+--
+-- TODO(conathan): this code is a mess and should be untangled. The
+-- basic problem is that not all channel requests are in the same
+-- logical class, even though RFC 4254 and hence our data types group
+-- them together. Tracking more state in individual channels would get
+-- us pretty far here: knowing if a backend has been started yet, and
+-- if an X11 forwarded request has been received are enough to handle
+-- the above examples.
 handleChannelRequest ::
   SshChannelRequest -> ChannelId -> Bool -> Connection ()
 handleChannelRequest request channelId wantReply = do
@@ -405,44 +572,69 @@ handleChannelRequest request channelId wantReply = do
   go :: Client -> SshState -> SshChannel -> STM (SshChannel, IO Bool)
   go client state channel = case request of
     SshChannelRequestPtyReq term winsize modes ->
-      do let termios = case parseTerminalModes modes of
+      -- Only allow PTY allocation before a session backend is
+      -- started. The RFC 4254 doesn't actually say to enforce this,
+      -- but I'm not sure what it would mean to allocate the PTY after
+      -- starting the backend.
+      if sshChannelState channel /= SshChannelStateOpen
+      then return (channel, return False)
+      else do
+        let termios = case parseTerminalModes modes of
                          Left _   -> []
                          Right xs -> xs
 
-             channel' = channel
-               { sshChannelPty = Just (term, winsize, termios)
-               }
-         return (channel', return True)
+            channel' = channel
+              { sshChannelPty = Just (term, winsize, termios) }
+        return (channel', return True)
 
     SshChannelRequestEnv name value ->
-      do let channel' = channel
-               { sshChannelEnv = (name,value) : sshChannelEnv channel
-               }
-         return (channel', return True)
+      -- Only allow env changes before a session backend is
+      -- started. The RFC 4254 doesn't actually say to enforce this --
+      -- but see the first sentence of Section 6.4 -- but if we do
+      -- allow setting env vars when a backend is running then we need
+      -- to notify the backend.
+      --
+      -- The obvious way to notify the backend is to add a new kind of
+      -- 'SessionEvent' for env-var requests.
+      if sshChannelState channel /= SshChannelStateOpen
+      then do
+        let k = do
+              debug "rejecting an env var update; this may be a bug!"
+              return False
+        return (channel, k)
+      else do
+        let channel' = channel
+              { sshChannelEnv = (name,value) : sshChannelEnv channel
+              }
+        return (channel', return True)
 
     SshChannelRequestShell ->
       do case sshChannelPty channel of
+           -- This is probably not correct, technically: you can start
+           -- a shell without a PTY in OpenSSH with 'ssh -T <host>'.
            Nothing -> return (channel, return False)
            Just (term,winsize,termios) -> do
              let continuation =
                    cOpenShell client term winsize termios
                      (channelRead client state channelId)
                      (channelWrite client state channelId)
-             return (channel, continuation)
+             guardBackendRequest continuation
 
+    -- TODO(conathan): this request ("exec") and the "subsystem"
+    -- request should also find out whether a PTY has been allocated.
     SshChannelRequestExec command ->
       do let continuation =
                cRequestExec client command
                  (channelRead client state channelId)
                  (channelWrite client state channelId)
-         return (channel, continuation)
+         guardBackendRequest continuation
 
     SshChannelRequestSubsystem subsystem ->
       do let continuation =
                cRequestSubsystem client subsystem
                  (channelRead client state channelId)
                  (channelWrite client state channelId)
-         return (channel, continuation)
+         guardBackendRequest continuation
 
     SshChannelRequestWindowChange winsize ->
       do let continuation = liftIO . atomically $ do
@@ -454,14 +646,37 @@ handleChannelRequest request channelId wantReply = do
                return True
          return (channel, continuation)
 
+    where
+    -- Check and update state for backend request.
+    --
+    -- A session backend can only be started once on a channel (and
+    -- only for session channels, altho we don't check that).
+    guardBackendRequest ::
+      IO Bool -> STM (SshChannel, IO Bool)
+    guardBackendRequest k = do
+      if sshChannelState channel /= SshChannelStateOpen
+      then return (channel, fail "bad backend request!")
+      else do
+        let k' = do
+              success <- k
+              when success $
+                runConnection client state $
+                  connectionModifyChannel channelId $ \channel' ->
+                    channel'
+                      { sshChannelState = SshChannelStateBackendRunning }
+              return success
+        return (channel, k')
+
 ----------------------------------------------------------------
 -- * Operations for communicating with them over channel.
+--
+-- These operations are intended for use by session backends, altho it
+-- would make sense to generalize them for internal use in this module
+-- as well.
 
 -- | Write data to them, accounting for their window size.
 --
 -- Sending 'Nothing' closes the connection.
---
--- This function is intended for use by our session backends.
 --
 -- It might be better to expose the 'SessionEvent' API here, which
 -- would allow a backend to additionally send 'SessionWinsize' and
@@ -470,6 +685,14 @@ channelWrite :: Client -> SshState -> ChannelId -> Maybe S.ByteString -> IO ()
 channelWrite client state channelId Nothing = runConnection client state $ do
   channel <- connectionGetChannel channelId
   connectionSend (SshMsgChannelClose (sshChannelId_them channel))
+  -- TODO(conathan): actually clean up the channel. We also need to
+  -- handle (somewhere else) the case where we receive a "channel
+  -- close" over the network: notify the backend and let it send a
+  -- channel close back? Or, just send the close ourselves, and simply
+  -- notify the backend that it happened.
+  --
+  -- See also comment above 'sendChannelOpenSession' re safely
+  -- removing channels from the channel map.
 
 channelWrite client state channelId (Just msg') = runConnection client state $ do
   id_them <- sshChannelId_them <$> connectionGetChannel channelId
@@ -495,8 +718,6 @@ channelWrite client state channelId (Just msg') = runConnection client state $ d
         go id_them next
 
 -- | Read a session event from them, accounting for window size.
---
--- This function is intended for use by our session backends.
 channelRead :: Client -> SshState -> ChannelId -> IO SessionEvent
 channelRead client state channelId = runConnection client state $ do
   (windowAdjustSize, event) <-
