@@ -5,7 +5,6 @@
 module Network.SSH.PrivateKeyFormat where
 
 import           Network.SSH.Messages
-import           Network.SSH.Named
 import           Network.SSH.Protocol
 import           Network.SSH.PubKey
 
@@ -21,7 +20,6 @@ import qualified Crypto.PubKey.RSA as RSA
 import           Data.ByteArray.Encoding
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Char8 as S8
-import qualified Data.ByteString.Short as Short
 import           Data.Foldable (traverse_)
 import           Data.Serialize
 import           Data.Word
@@ -52,19 +50,6 @@ armorHeader = "-----BEGIN OPENSSH PRIVATE KEY-----"
 
 armorFooter :: S.ByteString
 armorFooter = "-----END OPENSSH PRIVATE KEY-----"
-
--- | Load private keys from file.
---
--- The keys file must be in OpenSSH format; see @:/server/README.md@.
-loadPrivateKeys :: FilePath -> IO [Named (SshPubCert, PrivateKey)]
-loadPrivateKeys path =
-  do res <- (extractPK <=< parsePrivateKeyFile) <$> S.readFile path
-     case res of
-       Left e -> fail ("Error loading server keys: " ++ e)
-       Right pk -> return
-                     [ Named (Short.toShort (sshPubCertName pub)) (pub, priv)
-                     | (pub,priv,_comment) <- pk
-                     ]
 
 getPrivateKeyFile :: Get PrivateKeyFile
 getPrivateKeyFile =

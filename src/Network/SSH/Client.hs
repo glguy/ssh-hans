@@ -16,10 +16,10 @@ module Network.SSH.Client (
   ) where
 
 import           Network.SSH.Connection
+import           Network.SSH.LoadKeys
 import           Network.SSH.Messages
 import           Network.SSH.Named
 import           Network.SSH.Packet
-import           Network.SSH.PrivateKeyFormat
 import           Network.SSH.PubKey
 import           Network.SSH.Rekey
 import           Network.SSH.Server ( sayHello )
