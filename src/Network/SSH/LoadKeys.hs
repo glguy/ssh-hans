@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module LoadKeys where
+module Network.SSH.LoadKeys where
 
 import           Control.Monad (unless)
 import           Data.ByteArray.Encoding (Base(Base64), convertFromBase)
@@ -9,7 +9,7 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
 import           Data.Serialize (runGet)
 
-import Network.SSH.Messages
+import           Network.SSH.Messages
 
 loadPublicKeys :: FilePath -> IO [SshPubCert]
 loadPublicKeys fp =

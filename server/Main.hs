@@ -4,6 +4,7 @@
 
 module Main where
 
+import           Network.SSH.LoadKeys
 import           Network.SSH.Messages
 import           Network.SSH.Packet ( SshIdent(..) )
 import           Network.SSH.Server
@@ -31,7 +32,6 @@ import qualified Graphics.Vty as Vty
 
 import Openpty
 import UnixTerminalFlags
-import LoadKeys
 
 main :: IO ()
 main = withSocketsDo $

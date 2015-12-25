@@ -21,6 +21,7 @@ library
                        Network.SSH.Client
                        Network.SSH.State
                        Network.SSH.Keys
+                       Network.SSH.LoadKeys
                        Network.SSH.PubKey
                        Network.SSH.Ciphers
                        Network.SSH.Connection
@@ -61,7 +62,7 @@ library
 -- TODO(conathan): remove vestigial 'server' deps
 executable client
   main-is:             Main.hs
-  other-modules:       Openpty, UnixTerminalFlags, LoadKeys
+  other-modules:       Openpty, UnixTerminalFlags
   if os(halvm)
     buildable:         False
   else
@@ -83,7 +84,7 @@ executable client
 
 executable server
   main-is:             Main.hs
-  other-modules:       Openpty, UnixTerminalFlags, LoadKeys
+  other-modules:       Openpty, UnixTerminalFlags
   if os(halvm)
     buildable:         False
   else
