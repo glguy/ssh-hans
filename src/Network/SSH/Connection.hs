@@ -81,7 +81,7 @@ connectionGetChannelTVar c = do
   case Map.lookup c channels of
     Nothing -> do
       connectionSend (SshMsgDisconnect SshDiscProtocolError "" "")
-      fail "connectionGetChannelTVar: bad channel!"
+      fail $ "connectionGetChannelTVar: no such channel: " ++ show c ++ "!"
     Just channelTVar -> return channelTVar
 
 -- | Look up a channel by (our side) id.
