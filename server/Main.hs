@@ -8,8 +8,6 @@ import           Network.SSH.LoadKeys
 import           Network.SSH.Messages
 import           Network.SSH.Packet ( SshIdent(..) )
 import           Network.SSH.Server
-import           Network.SSH.PubKey
-import           Network.SSH.PrivateKeyFormat
 
 import           Control.Monad
 import           Control.Exception
@@ -39,9 +37,9 @@ main = withSocketsDo $
      sAuth   <- loadPrivateKeys "server_keys"
 
      home    <- getHomeDirectory
-     pubKeys <- loadPublicKeys (home </> ".ssh" </> "authorized_keys")
      user    <- getEnv "USER"
-     let creds = [(S8.pack user,pubKeys)]
+     let pubKeys = [home </> ".ssh" </> "authorized_keys"]
+     let creds   = [(S8.pack user,pubKeys)]
 
      sshServer (mkServer sAuth creds sock)
 
@@ -64,7 +62,7 @@ convertWindowSize winsize =
     , wsYPixel = fromIntegral $ sshWsY    winsize
     }
 
-type ClientCredential = (S.ByteString, [SshPubCert])
+type ClientCredential = (S.ByteString, [FilePath])
 
 mkClient :: [ClientCredential] -> (Handle,HostName,PortNumber) -> Client
 mkClient creds (h,_,_) = Client { .. }
@@ -137,23 +135,9 @@ mkClient creds (h,_,_) = Client { .. }
 
        return True
 
-  -- Querying for support
-  cAuthHandler _ _ _ (SshAuthPublicKey alg key Nothing) =
-    return (AuthPkOk alg key)
-
-  cAuthHandler _ _ _ (SshAuthPassword "god" Nothing) =
-    return AuthAccepted
-
-  cAuthHandler session_id username svc (SshAuthPublicKey alg key (Just sig)) =
-    case lookup username creds of
-      Just pubs
-        | key `elem` pubs
-        , verifyPubKeyAuthentication session_id username svc alg key sig
-        -> return AuthAccepted
-      _ -> return (AuthFailed ["password","publickey"])
-
-  cAuthHandler _session_id _user _svc _m =
-       return (AuthFailed ["password","publickey"])
+  cAuthHandler = defaultAuthHandler
+    (defaultCheckPw (const $ Just "god"))
+    (defaultLookupPubKeys (\user -> return $ maybe [] id $ lookup user creds))
 
 echoServer :: IO SessionEvent -> (Maybe S.ByteString -> IO ()) -> IO ()
 echoServer readEvent write = loop

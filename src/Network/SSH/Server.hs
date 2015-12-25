@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
@@ -12,21 +13,32 @@ module Network.SSH.Server (
   , sshServer
   , sayHello
 
+  , defaultAuthHandler
+  , defaultCheckPw
+  , defaultLookupPubKeys
+
   ) where
 
 import           Network.SSH.Connection
+import           Network.SSH.LoadKeys
 import           Network.SSH.Messages
 import           Network.SSH.Named
 import           Network.SSH.Packet
+import           Network.SSH.PubKey
 import           Network.SSH.Rekey
 import           Network.SSH.State
 
 import           Control.Concurrent
-import           Control.Monad (forever)
 import qualified Control.Exception as X
+import           Control.Monad (forever)
+import           Crypto.Hash (SHA256(..), hashWith)
 import qualified Data.ByteString.Char8 as S
 import           Data.IORef (writeIORef, readIORef)
 import           Data.Serialize (runPutLazy)
+
+#if !MIN_VERSION_base(4,8,0)
+import Control.Applicative ((<$>))
+#endif
 
 -- Public API ------------------------------------------------------------------
 
@@ -76,6 +88,69 @@ sayHello state client v_us =
      v_them <- parseFrom client (sshBuf state) getSshIdent
      debug $ "their SSH version: " ++ S.unpack (sshIdentString v_them)
      return v_them
+
+----------------------------------------------------------------
+-- Auth helpers
+
+-- | Helper for constructing the 'cAuthHandler' field of 'Client'.
+--
+-- The 'defaultCheckPw' and 'defaultLookupPubKeys' below can be used
+-- to supply the @checkPw@ and @lookupPubKeys@ arguments. The other
+-- arguments will be supplied by the auth handler later when
+-- authenticating a user.
+defaultAuthHandler ::
+  (S.ByteString -> S.ByteString -> IO Bool) ->
+  (S.ByteString -> IO [SshPubCert]) ->
+  SshSessionId -> S.ByteString -> SshService -> SshAuthMethod -> IO AuthResult
+defaultAuthHandler checkPw lookupPubKeys
+  session_id user service authMethod = do
+  case authMethod of
+    -- For public key logins, a request without a signature means the
+    -- user is querying if logging in is supported with a given key
+    -- and algorithm, and a request with a signature is an actual
+    -- login request.
+    SshAuthPublicKey alg key Nothing    -> return (AuthPkOk alg key)
+    SshAuthPublicKey alg key (Just sig) -> toAuth <$> checkKey alg key sig
+    SshAuthPassword password Nothing    -> toAuth <$> checkPw user password
+    -- One of the requests we reject here is a the two argument
+    -- password request, which is a password change request.
+    _ -> return (AuthFailed ["password","publickey"])
+  where
+  toAuth True  = AuthAccepted
+  toAuth False = AuthFailed ["password","publickey"]
+
+  checkKey alg key sig = do
+    pubs <- lookupPubKeys user
+    return $
+      key `elem` pubs &&
+      verifyPubKeyAuthentication session_id user service alg key sig
+
+-- | Helper for constructing @checkPw@ argument to 'defaultAuthHandler'.
+--
+-- A "real" server probably does not store user passwords in plain
+-- text ...
+defaultCheckPw ::
+  (S.ByteString -> Maybe S.ByteString) ->
+  S.ByteString -> S.ByteString -> IO Bool
+defaultCheckPw userToPw user password = do
+  case userToPw user of
+    Nothing -> return False
+    Just password' -> do
+      -- Hash passwords before comparing to avoid timing attacks.
+      let hash  = hashWith SHA256 password
+      let hash' = hashWith SHA256 password'
+      return $ hash == hash'
+
+-- | Helper for constructing the @lookupPubKeys@ argument to
+-- 'defaultAuthHandler'.
+defaultLookupPubKeys ::
+  (S.ByteString -> IO [FilePath]) ->
+  S.ByteString -> IO [SshPubCert]
+defaultLookupPubKeys lookupPubKeyFiles user = do
+  keyFiles <- lookupPubKeyFiles user
+  concat <$> mapM loadPublicKeys keyFiles
+
+----------------------------------------------------------------
 
 handleAuthentication ::
   SshState -> Client -> IO (Maybe (S.ByteString, SshService))
