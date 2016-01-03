@@ -45,5 +45,8 @@ the other end does something unexpected.
 Incompleteness / Future Work
 ----------------------------
 
+There is no support for checking that server signatures are known
+(cf. `~/.ssh/known_hosts`) in clients.
+
 The connection implementation in `src/Network/SSH/Connection.hs` is
 incomplete; see that file for more information.

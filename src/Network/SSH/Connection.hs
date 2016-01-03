@@ -121,9 +121,9 @@ connectionModifyChannelWithResult c f = do
 --
 -- TODO(conathan): if we instead returned a 'TVar SshChannel' here,
 -- and maybe embedded our channel id in the 'SshChannel', we'd be free
--- to delete a channel from the channel map without worrying a client
--- later looking it up by id and failing. In any case, we need a
--- better story around closing and cleaning up channels.
+-- to delete a channel from the channel map without worrying about a
+-- client later looking it up by id and failing. In any case, we need
+-- a better story around closing and cleaning up channels.
 sendChannelOpenSession :: Connection ChannelId
 sendChannelOpenSession = do
   -- Some of the channel state corresponding to them is not defined

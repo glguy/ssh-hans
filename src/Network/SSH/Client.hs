@@ -25,14 +25,13 @@ import           Network.SSH.Rekey
 import           Network.SSH.Server ( sayHello )
 import           Network.SSH.State
 
-import           Control.Concurrent.Async ( async )
+import           Control.Concurrent.Async ( withAsync )
 import qualified Control.Exception as X
-import           Control.Monad ( when, void )
+import           Control.Monad ( when )
 import qualified Data.ByteString.Char8 as S
 import qualified Data.ByteString.Lazy as L
 import qualified Data.ByteString.Short as Short
 import           Data.IORef ( writeIORef, readIORef )
-import           Data.Monoid ( (<>) )
 import           System.IO
 
 #if MIN_VERSION_base(4,8,0)
@@ -66,11 +65,13 @@ data ClientState = ClientState
 -- See 'mkDefaultClientState' for configuration details.
 sshClient :: ClientState -> IO ()
 sshClient clientSt = do
+  debug "starting client ..."
   -- The '[]' is "server credentials", i.e. server private keys; we
   -- might want client keys here?
   state <- initialState (csAlgs clientSt) ClientRole []
   let v_c = csIdent clientSt
   let client = csNet clientSt
+  debug "saying hello ..."
   v_s <- sayHello state client v_c
   writeIORef (sshIdents state) (v_s,v_c)
 
@@ -86,14 +87,15 @@ sshClient clientSt = do
   debug "auth done!"
 
   debug "starting channel loop ..."
-  void . async $ runConnection client state connectionService
-  debug "channel loop started!"
+  -- Kill the connection service when this thread exits.
+  withAsync (runConnection client state connectionService) $ \_ -> do
+    debug "channel loop started!"
 
-  debug "running channel hook ..."
-  maybe (return ()) (\f -> f client state)
-    (csChannelHook clientSt)
-  debug "channel hook finished!"
-  debug "exiting ..."
+    debug "running channel hook ..."
+    maybe (return ()) (\f -> f client state)
+      (csChannelHook clientSt)
+    debug "channel hook finished!"
+    debug "exiting ..."
 
 -- | Make a client state with reasonable defaults.
 --
@@ -139,7 +141,7 @@ defaultClientState ::
   IO ClientState
 defaultClientState version user _host _port handle getPw
   keyFile prefs transportHook channelHook = do
-  let csIdent = SshIdent $ S.pack ("SSH-2.0-" <> version)
+  let csIdent = sshIdent $ S.pack version
   let csNet   = mkDefaultClient handle
   let csUser  = S.pack user
   let csGetPw = getPw

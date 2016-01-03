@@ -11,9 +11,10 @@ import Network.SSH.Messages
 import Network.SSH.Protocol
 
 import           Control.Applicative ((<|>))
-import           Control.Monad (unless, guard)
+import           Control.Monad (unless)
 import           Data.ByteArray (constEq)
 import qualified Data.ByteString as S
+import qualified Data.ByteString.Char8 as S8
 import qualified Data.ByteString.Lazy as L
 import           Data.Monoid ((<>))
 import           Data.Word
@@ -27,6 +28,10 @@ import           Crypto.Random
 
 newtype SshIdent = SshIdent { sshIdentString :: S.ByteString }
   deriving (Show,Read,Eq)
+
+-- | Smart constructor for 'SshIdent'.
+sshIdent :: S.ByteString -> SshIdent
+sshIdent version = SshIdent $ "SSH-2.0-" <> version
 
 -- Hash Generation -------------------------------------------------------------
 
@@ -50,8 +55,8 @@ sshDhHash v_c v_s i_c i_s k_s e f k = runPut $
      putByteString k -- raw encoding
 
 putSshIdent :: Putter SshIdent
-putSshIdent sshIdent =
-  putLazyByteString $ L.fromStrict (sshIdentString sshIdent <> "\r\n")
+putSshIdent ident =
+  putLazyByteString $ L.fromStrict (sshIdentString ident <> "\r\n")
 
 -- | Given a way to render something, turn it into an ssh packet.
 putSshPacket ::
@@ -102,7 +107,8 @@ getOneLine =
 getSshIdent :: Get SshIdent
 getSshIdent  = label "SshIdent" $
   do str <- getOneLine
-     guard (S.isPrefixOf "SSH-2.0-" str)
+     unless (S.isPrefixOf "SSH-2.0-" str) $
+       fail $ "expected \"SSH-2.0-\", got \"" ++ S8.unpack str ++ "\""
      return (SshIdent str)
 
 -- | Given a way to parse the payload of an ssh packet, do the required

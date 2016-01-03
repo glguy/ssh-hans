@@ -6,7 +6,7 @@ module Main where
 
 import           Network.SSH.LoadKeys
 import           Network.SSH.Messages
-import           Network.SSH.Packet ( SshIdent(..) )
+import           Network.SSH.Packet
 import           Network.SSH.Server
 
 import           Control.Monad
@@ -44,7 +44,7 @@ main = withSocketsDo $
      sshServer (mkServer sAuth creds sock)
 
 greeting :: SshIdent
-greeting  = SshIdent "SSH-2.0-SSH_HaLVM_2.0"
+greeting  = sshIdent "SSH_HaLVM_2.0"
 
 mkServer :: [ServerCredential] -> [ClientCredential] -> Socket -> Server
 mkServer auths creds sock = Server
