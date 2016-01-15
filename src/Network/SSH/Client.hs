@@ -58,6 +58,8 @@ data ClientState = ClientState
   , csTransportHook :: Maybe (Client -> SshState -> IO ())
     -- | Optional hook to run after the channel loop is running.
   , csChannelHook :: Maybe (Client -> SshState -> IO ())
+    -- | Debug level greater than zero means show debug messages.
+  , csDebugLevel :: Int
   }
 
 -- | Run an SSh client.
@@ -65,37 +67,37 @@ data ClientState = ClientState
 -- See 'mkDefaultClientState' for configuration details.
 sshClient :: ClientState -> IO ()
 sshClient clientSt = do
-  debug "starting client ..."
   -- The '[]' is "server credentials", i.e. server private keys; we
   -- might want client keys here?
-  state <- initialState (csAlgs clientSt) ClientRole []
+  state <- initialState (csDebugLevel clientSt) (csAlgs clientSt) ClientRole []
+  debug state "starting client ..."
   let v_c = csIdent clientSt
   let client = csNet clientSt
-  debug "saying hello ..."
+  debug state "saying hello ..."
   v_s <- sayHello state client v_c
   writeIORef (sshIdents state) (v_s,v_c)
 
-  debug "starting key exchange ..."
+  debug state "starting key exchange ..."
   initialKeyExchange client state
-  debug "key exchange done!"
+  debug state "key exchange done!"
 
   maybe (return ()) (\f -> f client state)
     (csTransportHook clientSt)
 
-  debug "starting auth ..."
+  debug state "starting auth ..."
   authenticate state clientSt client
-  debug "auth done!"
+  debug state "auth done!"
 
-  debug "starting channel loop ..."
+  debug state "starting channel loop ..."
   -- Kill the connection service when this thread exits.
   withAsync (runConnection client state connectionService) $ \_ -> do
-    debug "channel loop started!"
+    debug state "channel loop started!"
 
-    debug "running channel hook ..."
+    debug state "running channel hook ..."
     maybe (return ()) (\f -> f client state)
       (csChannelHook clientSt)
-    debug "channel hook finished!"
-    debug "exiting ..."
+    debug state "channel hook finished!"
+    debug state "exiting ..."
 
 -- | Make a client state with reasonable defaults.
 --
@@ -128,6 +130,7 @@ sshClient clientSt = do
 -- If the optional transport hook in @hook@ is not provided, then no
 -- transport hook is run.
 defaultClientState ::
+  Int                                 {- ^ debug level                -} ->
   String                              {- ^ software version           -} ->
   String                              {- ^ user                       -} ->
   String                              {- ^ host name                  -} ->
@@ -139,7 +142,7 @@ defaultClientState ::
   Maybe (Client -> SshState -> IO ()) {- ^ optional transport hook    -} ->
   Maybe (Client -> SshState -> IO ()) {- ^ optional channel hook      -} ->
   IO ClientState
-defaultClientState version user _host _port handle getPw
+defaultClientState csDebugLevel version user _host _port handle getPw
   keyFile prefs transportHook channelHook = do
   let csIdent = sshIdent $ S.pack version
   let csNet   = mkDefaultClient handle
@@ -190,7 +193,7 @@ getPassword prompt = do
 
 authenticate :: SshState -> ClientState -> Client -> IO ()
 authenticate state clientSt client = do
-  debug "requesting ssh-userauth service from server ..."
+  debug state "requesting ssh-userauth service from server ..."
   send client state (SshMsgServiceRequest SshUserAuth)
   SshMsgServiceAccept service <-
     receiveSpecific SshMsgTagServiceAccept client state
@@ -198,10 +201,10 @@ authenticate state clientSt client = do
     send client state $
       SshMsgDisconnect SshDiscProtocolError
         "unexpected service, expected 'ssh-userauth'!" ""
-  debug "server accepted ssh-userauth service request!"
+  debug state "server accepted ssh-userauth service request!"
   
   -- let svc  = SshServiceOther "no-such-service@galois.com"
-  debug $ "attempting to log in as \"" ++ S.unpack user ++ "\" ..."
+  debug state $ "attempting to log in as \"" ++ S.unpack user ++ "\" ..."
 
   success <- publicKeyAuthLoop (csKeys clientSt)
 
@@ -217,7 +220,7 @@ authenticate state clientSt client = do
   user = csUser clientSt
 
   passwordAuth getPw = do
-    debug "attempting password ..."
+    debug state "attempting password ..."
     pw <- getPw
     send client state
       (SshMsgUserAuthRequest user svc
@@ -226,7 +229,7 @@ authenticate state clientSt client = do
 
   publicKeyAuthLoop []           = return False
   publicKeyAuthLoop (cred:creds) = do
-    debug "attempting public key ..."
+    debug state "attempting public key ..."
     let pubKeyAlg            = Short.fromShort $ nameOf cred
     let (pubKey, privateKey) = namedThing cred
     Just sid                <- readIORef (sshSessionId state)
@@ -245,13 +248,13 @@ authenticate state clientSt client = do
     response <- receive client state
     case response of
       SshMsgUserAuthSuccess -> do
-        debug $ "successfully logged in using " ++ type' ++ "!"
+        debug state $ "successfully logged in using " ++ type' ++ "!"
         return True
       SshMsgUserAuthFailure methods partialSuccess
         | null methods
         , not partialSuccess -> die "could not log in!"
         | otherwise          -> do
-            debug $ type' ++ " login failed! can continue with: " ++
-                    show methods
+            debug state $ type' ++ " login failed! can continue with: " ++
+                          show methods
             return False
       _ -> fail "handleAuthResponse: unexpected response!"

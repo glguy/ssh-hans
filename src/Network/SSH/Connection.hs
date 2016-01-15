@@ -63,6 +63,11 @@ connectionLog msg = Connection $
   do (client, _) <- ask
      liftIO (cLog client msg)
 
+debug' :: String -> Connection ()
+debug' msg = Connection $
+  do (_, state) <- ask
+     liftIO (debug state msg)
+
 ----------------------------------------------------------------
 -- * Concurrency helpers for channel-state read and mutate.
 
@@ -151,7 +156,7 @@ sendChannelOpenSession = do
     return channelState
   case channelState of
     SshChannelStateOpen -> do
-      liftIO . debug $ "opened session: channel: " ++ show channelId_us
+      debug' $ "opened session: channel: " ++ show channelId_us
       return channelId_us
     SshChannelStateOpenFailed reason desc _lang ->
       fail $ "channel-open request rejected: reason code: " ++
@@ -167,8 +172,8 @@ sendChannelRequestSubsystem ::
   ChannelId  -> S.ByteString ->
   Connection (IO SessionEvent, Maybe S.ByteString -> IO ())
 sendChannelRequestSubsystem id_us subsystem = do
-  liftIO . debug $ "requesting subsystem: channel: " ++ show id_us ++
-                   ", subsystem: " ++ C8.unpack subsystem
+  debug' $ "requesting subsystem: channel: " ++ show id_us ++
+           ", subsystem: " ++ C8.unpack subsystem
   channel <- connectionGetChannel id_us
   when (sshChannelState channel /= SshChannelStateOpen) $
     fail "channel state incompatible with subsystem request!"
@@ -259,7 +264,7 @@ connectionService =
        -- want to relax this later.
        SshMsgChannelRequest req chan wantReply
          | role == ClientRole ->
-         do liftIO . debug $
+         do debug' $
               "ignoring channel request received in client: channel" ++ show chan ++
               ", request type: " ++ show (sshChannelRequestTag req) ++
               ", want reply: " ++ show wantReply
@@ -351,7 +356,7 @@ handleChannelSuccessOrFailure :: Bool -> ChannelId -> Connection ()
 handleChannelSuccessOrFailure success id_us = do
   channel <- connectionGetChannel id_us
   let channelState = sshChannelState channel
-  liftIO . debug $
+  debug' $
     "channel-request response: channel " ++ show id_us ++
     ", response: " ++ (if success then "success" else "failure") ++
     ", state: " ++ show channelState
@@ -412,7 +417,7 @@ channelOpenHelper initialState' channelId_them windowSize_them maximumPacket_the
 -- | Handle a channel-open request of session type.
 handleChannelOpenSession :: Word32 -> Word32 -> Word32 -> Connection ()
 handleChannelOpenSession channelId_them initialWindowSize_them maximumPacket_them =
-  do liftIO $ debug $
+  do debug' $
        "starting session: channel: " ++ show channelId_them ++
        ", window size: " ++ show initialWindowSize_them ++
        ", packet size: " ++ show maximumPacket_them
@@ -455,7 +460,7 @@ handleChannelOpenDirectTcp channelId_them initialWindowSize_them maximumPacket_t
 -- | Handle a window adjust request from them.
 handleChannelWindowAdjust :: ChannelId -> Word32 -> Connection ()
 handleChannelWindowAdjust channelId adj =
-  do liftIO $ debug $
+  do debug' $
        "received window adjust: channel: " ++ show channelId ++
        ", adjust size: " ++ show adj
      connectionModifyChannel channelId $ \channel ->
@@ -599,7 +604,7 @@ handleChannelRequest request channelId wantReply = do
       if sshChannelState channel /= SshChannelStateOpen
       then do
         let k = do
-              debug "rejecting an env var update; this may be a bug!"
+              debug state "rejecting an env var update; this may be a bug!"
               return False
         return (channel, k)
       else do
@@ -762,7 +767,7 @@ channelRead client state channelId = runConnection client state $ do
 
   when (windowAdjustSize > 0) $ do
     id_them <- sshChannelId_them <$> connectionGetChannel channelId
-    liftIO $ debug $
+    debug' $
       "sent window adjust: channel: " ++ show id_them ++
       ", adjust size: " ++ show windowAdjustSize
     connectionSend (SshMsgChannelWindowAdjust id_them windowAdjustSize)

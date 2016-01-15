@@ -46,6 +46,8 @@ data Server = Server
   { sAccept :: IO Client
   , sAuthenticationAlgs :: [ServerCredential]
   , sIdent :: SshIdent
+    -- | Debug level greater than zero means show debug messages.
+  , sDebugLevel :: Int
   }
 
 sshServer :: Server -> IO ()
@@ -56,7 +58,7 @@ sshServer sock = forever $
        do let creds = sAuthenticationAlgs sock
           let prefs = allAlgsSshProposalPrefs
                 { sshServerHostKeyAlgsPrefs = map nameOf creds }
-          state <- initialState prefs ServerRole creds
+          state <- initialState (sDebugLevel sock) prefs ServerRole creds
           let v_s = sIdent sock
           v_c <- sayHello state client v_s
           writeIORef (sshIdents state) (v_s,v_c)
@@ -86,7 +88,7 @@ sayHello state client v_us =
   do cPut client (runPutLazy $ putSshIdent v_us)
      -- parseFrom used because ident doesn't use the normal framing
      v_them <- parseFrom client (sshBuf state) getSshIdent
-     debug $ "their SSH version: " ++ S.unpack (sshIdentString v_them)
+     debug state $ "their SSH version: " ++ S.unpack (sshIdentString v_them)
      return v_them
 
 ----------------------------------------------------------------

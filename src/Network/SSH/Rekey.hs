@@ -49,7 +49,7 @@ rekeyKeyExchange client state i_them =
 
 sendProposal :: Client -> SshState -> SshProposal -> IO ()
 sendProposal client state i_us =
-  do debug $ "auth methods: " ++ show (sshServerHostKeyAlgs i_us)
+  do debug state $ "auth methods: " ++ show (sshServerHostKeyAlgs i_us)
      send client state (SshMsgKexInit i_us)
 
 -- | Build 'SshProposal' from preferences.
@@ -149,12 +149,12 @@ rekeyConnection_c client state i_c i_s =
 
      let kex = suite_kex suite
      (pub_c, kexFinish) <- kexRun kex
-     debug "ran kex! sending dhInit to server ..."
+     debug state "ran kex! sending dhInit to server ..."
      send client state (SshMsgKexDhInit pub_c)
-     debug "sent dhInit to server! waiting for dhReply ..."
+     debug state"sent dhInit to server! waiting for dhReply ..."
      SshMsgKexDhReply pub_cert_s pub_s sig_s <-
        receiveSpecific SshMsgTagKexDhReply client state
-     debug "got dhReply from server!"
+     debug state "got dhReply from server!"
      k <- maybe (fail "bad remote public") return (kexFinish pub_s)
      let sid = SshSessionId
              $ kexHash kex
@@ -162,12 +162,12 @@ rekeyConnection_c client state i_c i_s =
 
      -- the session id doesn't change on rekeying
      modifyIORef' (sshSessionId state) (<|> Just sid)
-     debug "verifying server sig ..."
+     debug state "verifying server sig ..."
      when (not $ verifyServerSig pub_cert_s sig_s sid) $ do
        send client state (SshMsgDisconnect SshDiscKexFailed
                             "Unable to verify server sig!" "")
        fail "Unable to verify server sig!"
-     debug "verified server sig!"
+     debug state "verified server sig!"
 
      installSecurity client state suite sid k
 
@@ -192,12 +192,12 @@ computeSuiteOrDie ::
   IO CipherSuite
 computeSuiteOrDie client state serverCreds i_c i_s = do
   let i_them = clientAndServer2them (sshRole state) i_c i_s
-  debug "negotiating cipher suite ..."
-  debug $ "their ssh proposal: " ++ show i_them
+  debug state "negotiating cipher suite ..."
+  debug state $ "their ssh proposal: " ++ show i_them
   suite <- dieGracefullyOnSuiteFailure client state
          $ computeSuite state serverCreds i_s i_c
-  debug "negotiated suite:"
-  debug $ show (suite_desc suite)
+  debug state "negotiated suite:"
+  debug state $ show (suite_desc suite)
   return suite
 
 dieGracefullyOnSuiteFailure ::

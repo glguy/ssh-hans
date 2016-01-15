@@ -84,8 +84,10 @@ main = do
   let channelHook   = Just $ \client state -> do
         let e k = echoChannelHook k client state
         void $ mapConcurrently e [10..20]
+  let debugLevel = 1
 
   clientSt   <- defaultClientState
+                  debugLevel
                   version user host port handle getPw
                   keyFile prefs transportHook channelHook
   sshClient clientSt
@@ -99,30 +101,30 @@ main = do
 
 echoChannelHook :: Integer -> Client -> SshState -> IO ()
 echoChannelHook stop client state = do
-  debug "creating a session channel ..."
+  debug state "creating a session channel ..."
   (readEvent, write, id_us) <- runConnection client state $ do
     id_us  <- sendChannelOpenSession
     (r, w) <- sendChannelRequestSubsystem id_us "echo"
     return (r, w, id_us)
-  debug "created session channel!"
+  debug state "created session channel!"
 
-  debug "starting echo loop ..."
+  debug state "starting echo loop ..."
   let echoLoop :: Integer -> IO ()
       echoLoop n
         | stop == n = write Nothing
         | otherwise = do
         let msg = S8.pack (show n)
-        debug $ "sending: " ++ show id_us ++ ": " ++ S8.unpack msg
+        debug state $ "sending: " ++ show id_us ++ ": " ++ S8.unpack msg
         write (Just msg)
         SessionData bs <- readEvent
-        debug $ "reading: " ++ show id_us ++ ": " ++ S8.unpack bs
+        debug state $ "reading: " ++ show id_us ++ ": " ++ S8.unpack bs
         echoLoop (n+1)
   -- We don't actually need to run the echo loop asynchronously in
   -- this example, but we would e.g. to run a session channel and an
   -- SSH channel at the same time.
   echoThread <- async $ echoLoop 0
   void $ wait echoThread
-  debug "echo loop finished!" -- We might be waiting a while ...
+  debug state "echo loop finished!" -- We might be waiting a while ...
 
 proposalPrefs :: SshProposalPrefs
 proposalPrefs = allAlgsSshProposalPrefs

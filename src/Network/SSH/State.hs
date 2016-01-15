@@ -31,8 +31,10 @@ import qualified Data.Map.Strict as Map
 import           Data.Serialize
 import           Data.Word
 
-debug :: String -> IO ()
-debug s = putStrLn $ "debug: " ++ s
+debug :: SshState -> String -> IO ()
+debug st s = do
+  when (sshDebugLevel st > 0) $
+    putStrLn $ "debug: " ++ s
 
 -- Server Internals ------------------------------------------------------------
 
@@ -200,6 +202,7 @@ data SshState = SshState
   -- The outer 'TVar' protects insertion and deletion, and the inner
   -- 'TVar' protects the state of an individual channel.
   , sshChannels      :: !(TVar (Map ChannelId (TVar SshChannel)))
+  , sshDebugLevel    :: !Int -- ^ Used by 'debug'.
   }
 
 -- | Partial specification of an 'SshProposal'.
@@ -215,9 +218,14 @@ type ServerCredential = Named (SshPubCert, PrivateKey)
 
 -- TODO(conathan): factor out server credentials since they don't make
 -- sense in the client.
+
+-- | Build initial 'SshState'.
+--
+-- If the 'sshDebugLevel' is greater than zero then debug messages
+-- will be printed.
 initialState ::
-  SshProposalPrefs -> Role -> [ServerCredential] -> IO SshState
-initialState prefs sshRole creds =
+  Int -> SshProposalPrefs -> Role -> [ServerCredential] -> IO SshState
+initialState sshDebugLevel prefs sshRole creds =
   do drg          <- drgNew
      let none = namedThing cipher_none
      sshRecvState <- newIORef (0,none

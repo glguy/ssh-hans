@@ -40,17 +40,19 @@ main = withSocketsDo $
      user    <- getEnv "USER"
      let pubKeys = [home </> ".ssh" </> "authorized_keys"]
      let creds   = [(S8.pack user,pubKeys)]
+     let debugLevel = 1
 
-     sshServer (mkServer sAuth creds sock)
+     sshServer (mkServer debugLevel sAuth creds sock)
 
 greeting :: SshIdent
 greeting  = sshIdent "SSH_HaLVM_2.0"
 
-mkServer :: [ServerCredential] -> [ClientCredential] -> Socket -> Server
-mkServer auths creds sock = Server
+mkServer :: Int -> [ServerCredential] -> [ClientCredential] -> Socket -> Server
+mkServer debugLevel auths creds sock = Server
   { sAccept = mkClient creds `fmap` accept sock
   , sAuthenticationAlgs = auths
   , sIdent = greeting
+  , sDebugLevel = debugLevel
   }
 
 convertWindowSize :: SshWindowSize -> Winsize
