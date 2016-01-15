@@ -1,9 +1,9 @@
 SSH Server
 ==========
 
-The server program `server` takes no arguments and listens on TCP port
-2200. Connecting to the server presents you with an ASCII version of
-the popular Set game.
+The server program `server` takes a port number as argument and
+listens on the given TCP port. Connecting to the server presents you
+with an ASCII version of the popular Set game.
 
 The server expects to find a private key in a `server_keys` file in
 the directory the server is started in. This file must be in OpenSSH
@@ -30,7 +30,7 @@ Start the server:
 
     # Assumes you did `ln -s stack.ghc-7.10.yaml stack.yaml` in `..`.
     stack build
-    stack exec server
+    stack exec server 2200
 
 Connect to the server and play set:
 

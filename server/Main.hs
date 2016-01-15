@@ -33,7 +33,11 @@ import UnixTerminalFlags
 
 main :: IO ()
 main = withSocketsDo $
-  do sock    <- listenOn (PortNumber 2200)
+  do args <- getArgs
+     let port = case args of
+          [portString] -> fromInteger $ read portString
+          _            -> error "usage: server LISTEN_PORT"
+     sock    <- listenOn (PortNumber port)
      sAuth   <- loadPrivateKeys "server_keys"
 
      home    <- getHomeDirectory
