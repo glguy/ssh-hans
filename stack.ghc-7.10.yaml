@@ -11,7 +11,7 @@ packages:
 extra-deps:
 - vty-5.4.0
 - cereal-0.5.1.0
-- cryptonite-0.9
+- cryptonite-0.8
 - memory-0.10
 - setgame-1.1
 

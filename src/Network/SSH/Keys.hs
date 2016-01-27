@@ -210,7 +210,7 @@ runCurve25519dh ::
 runCurve25519dh =
 
      -- fails if key isn't 32 bytes long
-  do CryptoPassed priv <- fmap C25519.secretKey
+  do Right priv <-        fmap C25519.secretKey
                                (getRandomBytes 32 :: IO S.ByteString)
 
      -- Section 2: Transmit public key as "string"
@@ -218,7 +218,7 @@ runCurve25519dh =
 
          computeSecret raw_pub_c
              -- fails if key isn't 32 bytes long
-           | CryptoPassed pub_c <- C25519.publicKey raw_pub_c
+           | Right pub_c <- C25519.publicKey raw_pub_c
 
              -- Section 4.3: Treat shared key bytes as "integer"
            = Just $ runPut $ putMpInt $ os2ip $ C25519.dh pub_c priv
