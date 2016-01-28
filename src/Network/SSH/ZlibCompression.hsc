@@ -1,11 +1,8 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE DeriveDataTypeable #-}
-{-# LANGUAGE OverloadedStrings #-}
-module Network.SSH.Compression
-  ( Compression(..)
-  , allCompression
-  , compression_none
-  , compression_zlib
+module Network.SSH.ZlibCompression
+  ( mkZlibCompressor
+  , mkZlibDecompressor
   ) where
 
 #include <zlib.h>
@@ -19,25 +16,6 @@ import           Control.Exception
 import           Foreign
 import           Foreign.C.Types
 import           Foreign.C.String
-
-import Network.SSH.Named
-
-data Compression = Compression
-  { makeCompress   :: IO (S.ByteString -> IO L.ByteString)
-  , makeDecompress :: IO (S.ByteString -> IO L.ByteString)
-  }
-
--- The order of this list is interpreted as preference order
--- in 'allAlgsSshProposalPrefs'.
-allCompression :: [Named Compression]
-allCompression = [compression_none, compression_zlib]
-
-compression_none :: Named Compression
-compression_none = Named "none" (Compression mknoop mknoop)
-  where mknoop = return (return . L.fromStrict)
-
-compression_zlib :: Named Compression
-compression_zlib = Named "zlib" (Compression mkZlibCompressor mkZlibDecompressor)
 
 ------------------------------------------------------------------------
 -- Local minimalistic binding to zlib
