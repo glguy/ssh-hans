@@ -1,17 +1,24 @@
-{-# LANGUAGE ForeignFunctionInterface #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE OverloadedStrings #-}
 module Network.SSH.Compression
   ( Compression(..)
   , allCompression
   , compression_none
+#ifdef SSH_HANS_SUPPORT_COMPRESSION
   , compression_zlib
+#endif
   ) where
 
+#ifdef SSH_HANS_SUPPORT_COMPRESSION
 #include <zlib.h>
+#endif
 
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Lazy as L
+
+#ifdef SSH_HANS_SUPPORT_COMPRESSION
 import qualified Data.ByteString.Unsafe as U
 import           Data.Typeable
 import           Control.Monad
@@ -19,6 +26,7 @@ import           Control.Exception
 import           Foreign
 import           Foreign.C.Types
 import           Foreign.C.String
+#endif
 
 import Network.SSH.Named
 
@@ -30,12 +38,18 @@ data Compression = Compression
 -- The order of this list is interpreted as preference order
 -- in 'allAlgsSshProposalPrefs'.
 allCompression :: [Named Compression]
-allCompression = [compression_none, compression_zlib]
+allCompression =
+  [ compression_none
+#ifdef SSH_HANS_SUPPORT_COMPRESSION
+  , compression_zlib
+#endif
+  ]
 
 compression_none :: Named Compression
 compression_none = Named "none" (Compression mknoop mknoop)
   where mknoop = return (return . L.fromStrict)
 
+#ifdef SSH_HANS_SUPPORT_COMPRESSION
 compression_zlib :: Named Compression
 compression_zlib = Named "zlib" (Compression mkZlibCompressor mkZlibDecompressor)
 
@@ -157,3 +171,4 @@ zlibDriver flate fz input =
                  else return (L.fromChunks (reverse chunks'))
 
      loop []
+#endif
