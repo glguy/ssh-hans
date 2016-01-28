@@ -16,11 +16,6 @@ source-repository head
   type:                git
   location:            https://github.com/glguy/ssh-hans
 
-flag support_compression
-  description:         Support zlib compression, which introduces a dependency on zlib.
-  default:             True
-  manual:              True
-
 library
   exposed-modules:     Network.SSH.Server
                        Network.SSH.Client
@@ -52,21 +47,17 @@ library
                        stm          >=2.4.4    && <2.5,
                        async        >=2.0.2    && <2.3
 
-  c-sources:           cbits/umac64.c
+  c-sources:           cbits/zlib_alloc_hooks.c
+                       cbits/umac64.c
                        cbits/umac128.c
-
   install-includes:    umac.h
   include-dirs:        include
 
   build-tools:         hsc2hs
+  extra-libraries:     z
   hs-source-dirs:      src
   default-language:    Haskell2010
   ghc-options:         -Wall
-
-  if flag(support_compression)
-    c-sources:         cbits/zlib_alloc_hooks.c
-    extra-libraries:   z
-    cpp-options:       -DSSH_HANS_SUPPORT_COMPRESSION
 
 -- TODO(conathan): remove vestigial 'server' deps
 executable client
@@ -141,4 +132,4 @@ test-suite tests
 
   ghc-options:         -Wall
 
-  default-language:    Haskell2010
+  default-language:  Haskell2010
