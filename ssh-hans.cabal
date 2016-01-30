@@ -50,12 +50,15 @@ library
   build-depends:       base         >=4.7      && <4.9,
                        cereal       >=0.5.1.0  && <0.6,
                        bytestring   >=0.10.4.0 && <0.11,
-                       cryptonite   >=0.8      && <0.9,
+                       cryptonite   >=0.8      && <0.10,
                        memory       >=0.10     && <0.11,
                        transformers >=0.2      && <0.5,
                        containers   >=0.5.5.1  && <0.6,
                        stm          >=2.4.4    && <2.5,
                        async        >=2.0.2    && <2.3
+  -- Version 0.8 of cryptonite is the latest that builds on HaLVM.
+  if os(halvm)
+    build-depends:       cryptonite >=0.8 && <0.9
 
   c-sources:           cbits/umac64.c
                        cbits/umac128.c
@@ -126,10 +129,12 @@ test-suite umac
   hs-source-dirs:      tests
   default-language:    Haskell2010
   build-depends:       base         >=4.7      && <4.9,
-                       cryptonite   >=0.9      && <0.10,
+                       cryptonite   >=0.8      && <0.10,
                        memory       >=0.10     && <0.11,
                        bytestring   >=0.10.6.0 && <0.11,
                        ssh-hans
+  if os(halvm)
+    build-depends:       cryptonite >=0.8 && <0.9
 
 test-suite tests
   type:                exitcode-stdio-1.0
