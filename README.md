@@ -3,12 +3,19 @@ SSH Hans
 
 A Haskell implementation of the SSH V2 Protocol.
 
-Build the library and the example server with
+Build the library and the example client and server with
 
     ln -s stack.ghc-7.10.yaml stack.yaml
-    stack build
+    stack build --flag "ssh-hans:build_examples"
 
-See `server/README.md` for info on the example server.
+Note that the examples are not built by default, so we must enable
+building them by setting the `build_examples` flag above. If you are
+using Cabal instead of Stack, you can build the examples with
+
+    cabal install --flag build_examples
+
+See `client/README.md` and `server/README.md` for info on the example
+client and server.
 
 Bugs
 ----

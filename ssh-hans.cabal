@@ -21,6 +21,11 @@ flag support_compression
   default:             True
   manual:              True
 
+flag build_examples
+  description:         Build the example client and server. The examples are permanently disabled when building on HaLVM.
+  default:             False
+  manual:              False
+
 library
   exposed-modules:     Network.SSH.Server
                        Network.SSH.Client
@@ -44,7 +49,7 @@ library
 
   build-depends:       base         >=4.7      && <4.9,
                        cereal       >=0.5.1.0  && <0.6,
-                       bytestring   >=0.10.6.0 && <0.11,
+                       bytestring   >=0.10.4.0 && <0.11,
                        cryptonite   >=0.8      && <0.9,
                        memory       >=0.10     && <0.11,
                        transformers >=0.2      && <0.5,
@@ -74,7 +79,7 @@ library
 executable client
   main-is:             Main.hs
   other-modules:       Openpty, UnixTerminalFlags
-  if os(halvm)
+  if os(halvm) || !flag(build_examples)
     buildable:         False
   else
     build-depends:     base         >=4.7      && <4.9,
@@ -96,7 +101,7 @@ executable client
 executable server
   main-is:             Main.hs
   other-modules:       Openpty, UnixTerminalFlags
-  if os(halvm)
+  if os(halvm) || !flag(build_examples)
     buildable:         False
   else
     build-depends:     base         >=4.7      && <4.9,
