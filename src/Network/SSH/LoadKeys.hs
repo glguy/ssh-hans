@@ -11,10 +11,13 @@ import qualified Data.ByteString.Char8 as B8
 import qualified Data.ByteString.Short as Short
 import           Data.Serialize (runGet)
 
+import qualified Crypto.PubKey.RSA as RSA
+
 import           Network.SSH.Messages
 import           Network.SSH.Named
 import           Network.SSH.PrivateKeyFormat
 import           Network.SSH.PubKey
+import           Network.SSH.State
 
 #if !MIN_VERSION_base(4,8,0)
 import Control.Applicative ((<$>))
@@ -42,7 +45,10 @@ decodePublicKey xs =
 -- | Load private keys from file.
 --
 -- The keys file must be in OpenSSH format; see @:/server/README.md@.
-loadPrivateKeys :: FilePath -> IO [Named (SshPubCert, PrivateKey)]
+--
+-- The 'ServerCredential' here is a misnomer, since both clients and
+-- servers use the same credential format.
+loadPrivateKeys :: FilePath -> IO [ServerCredential]
 loadPrivateKeys path =
   do res <- (extractPK <=< parsePrivateKeyFile) <$> B.readFile path
      case res of
@@ -51,3 +57,13 @@ loadPrivateKeys path =
                      [ Named (Short.toShort (sshPubCertName pub)) (pub, priv)
                      | (pub,priv,_comment) <- pk
                      ]
+
+-- | Generate a random RSA 'ServerCredential' / named key pair.
+generateRsaKeyPair :: IO ServerCredential
+generateRsaKeyPair = do
+  -- The '0x10001' exponent is suggested in the cryptonite
+  -- documentation for 'RSA.generate'.
+  (pub, priv) <- RSA.generate 256{-bytes-} 0x10001{-e-}
+  let pub'  = SshPubRsa (RSA.public_e pub) (RSA.public_n pub)
+  let priv' = PrivateRsa priv
+  return (Named "ssh-rsa" (pub', priv'))
