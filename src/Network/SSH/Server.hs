@@ -17,6 +17,7 @@ module Network.SSH.Server (
   , defaultCheckPw
   , defaultLookupPubKeys
 
+  , generateRsaKeyPair
   ) where
 
 import           Network.SSH.Connection
