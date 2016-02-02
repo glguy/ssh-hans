@@ -1,5 +1,6 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Network.SSH.LoadKeys where
 
@@ -10,6 +11,7 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
 import qualified Data.ByteString.Short as Short
 import           Data.Serialize (runGet)
+import           Text.Read (readMaybe)
 
 import qualified Crypto.PubKey.RSA as RSA
 
@@ -67,3 +69,38 @@ generateRsaKeyPair = do
   let pub'  = SshPubRsa (RSA.public_e pub) (RSA.public_n pub)
   let priv' = PrivateRsa priv
   return (Named "ssh-rsa" (pub', priv'))
+
+----------------------------------------------------------------
+-- Hacky serialization for use by CC.
+--
+-- Some of the (non-RSA) types embedded 'ServerCredential' lack 'Read'
+-- or 'Show' instances, so we special case to RSA key pairs, which are
+-- the only type that CC uses.
+
+-- | String serialization for RSA key pairs.
+--
+-- Fails for non-RSA credentials.
+showRsaKeyPair :: ServerCredential -> Maybe String
+showRsaKeyPair cred
+  | "ssh-rsa"       <- nameOf cred
+  , (pub', priv')   <- namedThing cred
+  , SshPubRsa e n   <- pub'
+  , PrivateRsa priv <- priv'
+  = Just $ show ("ssh-rsa" :: String, e, n, priv)
+  | otherwise = Nothing
+
+-- | String de-serialization for RSA key pairs.
+--
+-- Expects input produced by 'showRsaKeyPair'.
+readRsaKeyPair :: String -> Maybe ServerCredential
+readRsaKeyPair s
+  | Just
+    ( "ssh-rsa" :: String
+    , e         :: Integer
+    , n         :: Integer
+    , priv      :: RSA.PrivateKey
+    ) <- readMaybe s
+  , pub'  <- SshPubRsa e n
+  , priv' <- PrivateRsa priv
+  = Just $ Named "ssh-rsa" (pub', priv')
+  | otherwise = Nothing

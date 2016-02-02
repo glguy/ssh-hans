@@ -18,6 +18,8 @@ module Network.SSH.Server (
   , defaultLookupPubKeys
 
   , generateRsaKeyPair
+  , readRsaKeyPair
+  , showRsaKeyPair
   ) where
 
 import           Network.SSH.Connection
