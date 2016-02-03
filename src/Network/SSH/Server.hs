@@ -33,7 +33,7 @@ import           Network.SSH.State
 
 import           Control.Concurrent
 import qualified Control.Exception as X
-import           Control.Monad (forever)
+import           Control.Monad (forever, when)
 import           Crypto.Hash (SHA256(..), hashWith)
 import qualified Data.ByteString.Char8 as S
 import           Data.IORef (writeIORef, readIORef)
@@ -81,7 +81,10 @@ sshServer sock = forever $
                 _             -> return ()
 
        `X.finally` (do
-         putStrLn "debug: main loop caught exception, closing client..."
+         -- Can't use 'Network.SSH.State.debug' here, since we don't
+         -- have the 'state'.
+         when (sDebugLevel sock > 0) $
+           putStrLn "debug: main loop caught exception, closing client..."
          cClose client)
 
 
