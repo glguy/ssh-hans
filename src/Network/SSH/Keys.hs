@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Key exchange and key generation
@@ -210,15 +211,26 @@ runCurve25519dh ::
 runCurve25519dh =
 
      -- fails if key isn't 32 bytes long
-  do Right priv <-        fmap C25519.secretKey
-                               (getRandomBytes 32 :: IO S.ByteString)
+#if MIN_VERSION_cryptonite(0,9,0)
+  do CryptoPassed priv <-
+#else
+     -- The cryptonite-0.8 version.
+  do Right priv <-
+#endif
+       fmap C25519.secretKey (getRandomBytes 32 :: IO S.ByteString)
 
      -- Section 2: Transmit public key as "string"
      let raw_pub_s  = convert $ C25519.toPublic priv
 
          computeSecret raw_pub_c
              -- fails if key isn't 32 bytes long
-           | Right pub_c <- C25519.publicKey raw_pub_c
+#if MIN_VERSION_cryptonite(0,9,0)
+           | CryptoPassed pub_c <-
+#else
+             -- The cryptonite-0.8 version.
+           | Right pub_c <-
+#endif
+               C25519.publicKey raw_pub_c
 
              -- Section 4.3: Treat shared key bytes as "integer"
            = Just $ runPut $ putMpInt $ os2ip $ C25519.dh pub_c priv

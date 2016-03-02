@@ -50,14 +50,12 @@ library
   build-depends:       base         >=4.7      && <4.9,
                        cereal       >=0.5.1.0  && <0.6,
                        bytestring   >=0.10.4.0 && <0.11,
-                       -- On HaLVM, cryptonite >=0.9 and doesn't
-                       -- build, and the API of cryptonite-0.8 and
-                       -- cryptonite-0.9 are incompatible, so we
-                       -- restrict to cryptonite <0.9 here. Revert
-                       -- ssh-hans commit
-                       -- c500e4fc50861df6876bc92b9e4d3ad53ae1f55e to
-                       -- use the cryptonite-0.9 API again.
-                       cryptonite   >=0.8      && <0.9,
+                       -- On HaLVM, cryptonite >=0.9 doesn't build,
+                       -- and the API of cryptonite-0.8 and
+                       -- cryptonite-0.9 are incompatible. So, some
+                       -- code in src/Network/SSH/Keys.hs uses CPP to
+                       -- support cryptonite 0.8 and 0.9.
+                       cryptonite   >=0.8      && <0.10,
                        memory       >=0.10     && <0.11,
                        transformers >=0.2      && <0.5,
                        containers   >=0.5.5.1  && <0.6,
