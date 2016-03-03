@@ -66,19 +66,12 @@ sshServer sock = forever $
           v_c <- sayHello state client v_s
           writeIORef (sshIdents state) (v_s,v_c)
           initialKeyExchange client state
-
           -- Connection established!
 
-          result <- handleAuthentication state client
-          case result of
-            Nothing -> send client state
-                         (SshMsgDisconnect SshDiscNoMoreAuthMethodsAvailable
-                                            "" "")
-            Just (_user,svc) ->
-              case svc of
-                SshConnection -> runConnection client state
-                                   connectionService
-                _             -> return ()
+          (_user, svc) <- handleAuthentication state client
+          case svc of
+            SshConnection -> runConnection client state connectionService
+            _             -> return ()
 
        `X.finally` (do
          -- Can't use 'Network.SSH.State.debug' here, since we don't
@@ -121,7 +114,7 @@ defaultAuthHandler checkPw lookupPubKeys
     SshAuthPublicKey alg key (Just sig) -> toAuth <$> checkKey alg key sig
     SshAuthPassword password Nothing    -> toAuth <$> checkPw user password
     -- One of the requests we reject here is a the two argument
-    -- password request, which is a password change request.
+    -- password request, which is a password-change request.
     _ -> return (AuthFailed ["password","publickey"])
   where
   toAuth True  = AuthAccepted
@@ -161,10 +154,13 @@ defaultLookupPubKeys lookupPubKeyFiles user = do
 ----------------------------------------------------------------
 
 handleAuthentication ::
-  SshState -> Client -> IO (Maybe (S.ByteString, SshService))
+  SshState -> Client -> IO (S.ByteString, SshService)
 handleAuthentication state client =
-  do let notAvailable = send client state
-                      $ SshMsgDisconnect SshDiscServiceNotAvailable "" ""
+  do let notAvailable = do
+           send client state $
+             SshMsgDisconnect SshDiscServiceNotAvailable
+               "(Service not available)" ""
+           fail "Client requested unavailable service during auth."
 
      Just session_id <- readIORef (sshSessionId state)
      req <- receive client state
@@ -175,6 +171,13 @@ handleAuthentication state client =
             authLoop
 
         where
+         -- The auth loop runs until auth succeeds. An OpenSSH client
+         -- will close the connection after receiving a
+         -- 'SshMsgUserAuthFailure [] False' message, but other
+         -- clients may need to be explicitly kicked by closing the
+         -- connection. This connection closing is up to the
+         -- 'cAuthHandler'.
+         authLoop :: IO (S.ByteString, SshService)
          authLoop =
            do userReq <- receive client state
               case userReq of
@@ -186,22 +189,28 @@ handleAuthentication state client =
 
                        AuthAccepted ->
                          do send client state SshMsgUserAuthSuccess
-                            return (Just (user, svc))
+                            return (user, svc)
 
                        AuthPkOk keyAlg key ->
                          do send client state
                               (SshMsgUserAuthPkOk keyAlg key)
                             authLoop
 
-                       AuthFailed [] ->
-                         do send client state (SshMsgUserAuthFailure [] False)
-                            return Nothing
-
+                       -- Although it might make sense to disconnect
+                       -- the client when the auth fails and there are
+                       -- no methods to continue, OpenSSH does not do
+                       -- this. So, we don't either, in order to get
+                       -- consistent behavior when connecting to our
+                       -- server with an OpenSSH client.
+                       --
+                       -- Note that the SSH spec allows a client to
+                       -- try authenticating with a second username
+                       -- after failing to authenticate with a first
+                       -- username, and so on.
                        AuthFailed ms ->
                          do send client state (SshMsgUserAuthFailure ms False)
                             authLoop
 
+                _ -> notAvailable
 
-                _ -> notAvailable >> return Nothing
-
-       _ -> notAvailable >> return Nothing
+       _ -> notAvailable
