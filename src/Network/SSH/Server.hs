@@ -4,19 +4,21 @@
 {-# LANGUAGE RecordWildCards #-}
 
 module Network.SSH.Server (
-
     Server(..)
   , ServerCredential
-  , Client(..)
   , SessionEvent(..)
-  , AuthResult(..)
   , sshServer
   , sayHello
 
+  -- * Authentication and request handling.
+  , AuthResult(..)
+  , Client(..)
   , defaultAuthHandler
   , defaultCheckPw
+  , defaultClient
   , defaultLookupPubKeys
 
+  -- * RSA keys.
   , generateRsaKeyPair
   , readRsaKeyPair
   , showRsaKeyPair
@@ -91,7 +93,11 @@ sayHello state client v_us =
      return v_them
 
 ----------------------------------------------------------------
--- Auth helpers
+-- * Auth helpers
+--
+-- These auth helpers can be used to construct 'cAuthHandler' used to
+-- override the default in (the poorly named)
+-- 'Network.SSH.State.defaultClient'.
 
 -- | Helper for constructing the 'cAuthHandler' field of 'Client'.
 --

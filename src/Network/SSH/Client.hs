@@ -155,19 +155,13 @@ defaultClientState csDebugLevel version user _host _port handle getPw
   return ClientState{..}
 
 mkDefaultClient :: Handle -> Client
-mkDefaultClient h = Client { .. }
-  where
-  cGet   = S.hGetSome h
-  cPut   = S.hPutStr  h . L.toStrict
-  cClose =   hClose   h
-  cLog   = putStrLn
-
-  -- Disable the server-oriented operations.
-  cOpenShell _ _ _ _ _    = return False
-  cDirectTcp _ _ _ _      = return False
-  cRequestSubsystem _ _ _ = return False
-  cRequestExec _ _ _      = return False
-  cAuthHandler _ _ _ _    = return $ AuthFailed []
+mkDefaultClient h =
+  defaultClient
+    { cGet   = S.hGetSome h
+    , cPut   = S.hPutStr  h . L.toStrict
+    , cClose =   hClose   h
+    , cLog   = putStrLn
+    }
 
 -- | A default 'csGetPw' implementation.
 --

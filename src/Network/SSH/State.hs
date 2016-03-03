@@ -67,14 +67,6 @@ data SessionEvent
   | SessionRequest {}
   -}
 
--- TODO(conathan): rename, e.g 'ClientState', since we are adding
--- client support. Or maybe, refactor this into client specific state
--- (if any; the 'cOpenShell' may be client only) and general "other
--- end of the connection state". From this symmetric point of view, it
--- might make sense to call the other end the client, but that could
--- be confusing since we also define client and server modules. Better
--- to call it something else ...
-
 -- | A mix of connection state and session handlers.
 --
 -- The session backends here -- 'cOpenShell', 'cDirectTcp',
@@ -82,6 +74,14 @@ data SessionEvent
 -- immediately with a boolean indicating whether the requested
 -- operation was allowed or not. So, implementers probably want to use
 -- 'forkIO' to run session backends in a separate thread.
+--
+-- TODO(conathan): rename, e.g 'ClientState', since we are adding
+-- client support. Or maybe, refactor this into client specific state
+-- (if any; the 'cOpenShell' may be client only) and general "other
+-- end of the connection state". From this symmetric point of view, it
+-- might make sense to call the other end the client, but that could
+-- be confusing since we also define client and server modules. Better
+-- to call it something else ...
 data Client = Client
   { cGet         :: Int -> IO S.ByteString
   -- ^ Read up to 'n' bytes from network socket
@@ -106,7 +106,7 @@ data Client = Client
                     (Maybe S.ByteString -> IO ()) ->
                     IO Bool
 
-  -- | Client requested a subsystem. Return True to accept.
+  -- | Client requested a subsystem. Return 'True' to accept.
   --
   -- The 'S.ByteString' argument is the subsystem requested.
   --
@@ -147,6 +147,33 @@ data Client = Client
                     SshService    ->
                     SshAuthMethod ->
                     IO AuthResult
+  }
+
+-- | Default them state.
+--
+-- The fields defined with 'error' always need to be overridden. The
+-- other fields are unused when we're a client. When we're a server,
+-- the other fields are used, but default to rejecting all requests,
+-- including authentication.
+defaultClient :: Client
+defaultClient = Client
+  { cGet   = error "cGet undefined!"
+  , cPut   = error "cPut undefined!"
+  , cClose = error "cClose undefined!"
+  , cLog   = error "cLog undefined!"
+
+  -- Make all requests fail immediately.
+  --
+  -- The empty list in 'AuthFailed []' means there are no auth methods
+  -- by which the client can continue authentication. The OpenSSH
+  -- client quits when receiving this.
+  , cAuthHandler      = \_ _ _ _   -> return $ AuthFailed []
+  -- These non-auth requests are only allowed after auth succeeds, and
+  -- so will never be called for the default 'cAuthHandler' above.
+  , cOpenShell        = \_ _ _ _ _ -> return False
+  , cDirectTcp        = \_ _ _ _   -> return False
+  , cRequestSubsystem = \_ _ _     -> return False
+  , cRequestExec      = \_ _ _     -> return False
   }
 
 ----------------------------------------------------------------
