@@ -13,6 +13,8 @@ module Network.SSH.Server (
   -- * Authentication and request handling.
   , AuthResult(..)
   , Client(..)
+  , SshAuthMethod(..)
+  , SshService(..)
   , defaultAuthHandler
   , defaultCheckPw
   , defaultClient
@@ -121,10 +123,10 @@ defaultAuthHandler checkPw lookupPubKeys
     SshAuthPassword password Nothing    -> toAuth <$> checkPw user password
     -- One of the requests we reject here is a the two argument
     -- password request, which is a password-change request.
-    _ -> return (AuthFailed ["password","publickey"])
+    _ -> return (AuthFailed ["password","publickey"] False)
   where
   toAuth True  = AuthAccepted
-  toAuth False = AuthFailed ["password","publickey"]
+  toAuth False = AuthFailed ["password","publickey"] False
 
   checkKey alg key sig = do
     pubs <- lookupPubKeys user
@@ -213,8 +215,8 @@ handleAuthentication state client =
                        -- try authenticating with a second username
                        -- after failing to authenticate with a first
                        -- username, and so on.
-                       AuthFailed ms ->
-                         do send client state (SshMsgUserAuthFailure ms False)
+                       AuthFailed ms ps ->
+                         do send client state (SshMsgUserAuthFailure ms ps)
                             authLoop
 
                 _ -> notAvailable

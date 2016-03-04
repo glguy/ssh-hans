@@ -30,8 +30,10 @@ import qualified Control.Exception as X
 import           Control.Monad ( when )
 import qualified Data.ByteString.Char8 as S
 import qualified Data.ByteString.Lazy as L
+import           Data.ByteString.Short (ShortByteString)
 import qualified Data.ByteString.Short as Short
 import           Data.IORef ( writeIORef, readIORef )
+import           Data.List ( intercalate, nub )
 import           System.IO
 
 #if MIN_VERSION_base(4,8,0)
@@ -185,6 +187,18 @@ getPassword prompt = do
     old <- hGetEcho stdin
     X.bracket_ (hSetEcho stdin echo) (hSetEcho stdin old) action
 
+-- | State for auth loop.
+data AuthState = AuthState
+  { asCreds              :: [Named (SshPubCert, PrivateKey)]
+  , asMaybeGetPw         :: Maybe (IO S.ByteString)
+  , asMethodsCanContinue :: [ShortByteString]
+  , asMethodsTried       :: [String]
+  }
+
+-- | Authenticate with the server, using the authentication methods we
+-- both support.
+--
+-- We try keys before passwords when both are supported.
 authenticate :: SshState -> ClientState -> Client -> IO ()
 authenticate state clientSt client = do
   debug state "requesting ssh-userauth service from server ..."
@@ -200,29 +214,58 @@ authenticate state clientSt client = do
   -- let svc  = SshServiceOther "no-such-service@galois.com"
   debug state $ "attempting to log in as \"" ++ S.unpack user ++ "\" ..."
 
-  success <- publicKeyAuthLoop (csKeys clientSt)
+  supportedMethods <- querySupportedAuthMethods
+  let st = AuthState
+        { asCreds              = csKeys clientSt
+        , asMaybeGetPw         = csGetPw clientSt
+        , asMethodsCanContinue = supportedMethods
+        , asMethodsTried       = []
+        }
+  (success, st') <- loop st
 
   when (not success) $ do
-    success' <- case csGetPw clientSt of
-      Nothing    -> return False
-      Just getPw -> passwordAuth getPw
-    when (not success') $
-      die "could not log in!"
+    let tried     = intercalate "," $
+                    nub $ asMethodsTried st'
+    let supported = intercalate "," $
+                    map (S.unpack . Short.fromShort) supportedMethods
+    let msg       = "Permission denied (server supports: " ++
+                    supported ++ "; we tried: " ++ tried ++ ")."
+    die msg
 
   where
   svc  = SshConnection
   user = csUser clientSt
 
-  passwordAuth getPw = do
+  -- Try keys before passwords.
+  --
+  -- This is really a 'StateT AuthState IO Bool' computation, but I
+  -- don't see any gain in actually using the transformer.
+  loop :: AuthState -> IO (Bool, AuthState)
+  loop st
+    | "publickey" `elem` asMethodsCanContinue st
+    , (cred:creds) <- asCreds st
+    = publicKeyAuth cred (st { asCreds = creds })
+
+    | "password" `elem` asMethodsCanContinue st
+    , Just getPw <- asMaybeGetPw st
+    -- Limit to three password attempts, like OpenSSH.
+    , (length . filter (== "password") $ asMethodsTried st) < 3
+    = passwordAuth getPw st
+
+    | otherwise = do
+        debug state $ "Failed to authenticate. Methods still available " ++
+          show (map Short.fromShort (asMethodsCanContinue st))
+        return (False, st)
+
+  passwordAuth getPw st = do
     debug state "attempting password ..."
     pw <- getPw
     send client state
       (SshMsgUserAuthRequest user svc
         (SshAuthPassword pw Nothing))
-    handleAuthResponse "password"
+    handleAuthResponse "password" st
 
-  publicKeyAuthLoop []           = return False
-  publicKeyAuthLoop (cred:creds) = do
+  publicKeyAuth cred st = do
     debug state "attempting public key ..."
     let pubKeyAlg            = Short.fromShort $ nameOf cred
     let (pubKey, privateKey) = namedThing cred
@@ -232,23 +275,35 @@ authenticate state clientSt client = do
     send client state
       (SshMsgUserAuthRequest user svc
         (SshAuthPublicKey pubKeyAlg pubKey (Just sig)))
-    success <- handleAuthResponse "publickey"
-    if success
-    then return True
-    else publicKeyAuthLoop creds
+    handleAuthResponse "publickey" st
 
-  handleAuthResponse :: String -> IO Bool
-  handleAuthResponse type' = do
+  handleAuthResponse :: String -> AuthState -> IO (Bool, AuthState)
+  handleAuthResponse type' st = do
+    let st' = st { asMethodsTried = type' : asMethodsTried st }
     response <- receive client state
     case response of
       SshMsgUserAuthSuccess -> do
         debug state $ "successfully logged in using " ++ type' ++ "!"
-        return True
-      SshMsgUserAuthFailure methods partialSuccess
-        | null methods
-        , not partialSuccess -> die "could not log in!"
-        | otherwise          -> do
-            debug state $ type' ++ " login failed! can continue with: " ++
-                          show methods
-            return False
+        return (True, st')
+      -- We ignore partial success, which is used by the server
+      -- e.g. to require both password and publickey.
+      SshMsgUserAuthFailure methods _partialSuccess -> do
+        debug state $ type' ++ " login failed! can continue with: " ++
+                      show methods
+        loop (st' { asMethodsCanContinue = methods })
       _ -> fail "handleAuthResponse: unexpected response!"
+
+  querySupportedAuthMethods :: IO [ShortByteString]
+  querySupportedAuthMethods = do
+    debug state $
+      "attempting to login with method 'none', " ++
+      "to get a list of supported auth methods."
+    send client state
+      (SshMsgUserAuthRequest user svc SshAuthNone)
+    response <- receive client state
+    case response of
+      SshMsgUserAuthFailure methods _partialSuccess -> return methods
+      -- This will fail when it shouldn't if auth method "none" is
+      -- actually supported, but this is unlikely.
+      _ -> fail $ "querySupportedAuthMethods: unexpected response " ++
+                  show (sshMsgTag response)

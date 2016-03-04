@@ -17,6 +17,18 @@ using Cabal instead of Stack, you can build the examples with
 See `client/README.md` and `server/README.md` for info on the example
 client and server.
 
+OpenSSH Format Keys
+-------------------
+
+We only support keys in OpenSSH format, corresponding to the `-o`
+option to `ssh-keygen`. To convert an existing key to OpenSSH format:
+
+    ssh-keygen -o -p -f ~/.ssh/id_rsa
+
+To generate a new, password-less OpenSSH format key:
+
+    ssh-keygen -o -N '' -f test_key
+
 Bugs
 ----
 

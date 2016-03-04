@@ -39,9 +39,15 @@ debug st s = do
 -- Server Internals ------------------------------------------------------------
 
 data AuthResult
-  = AuthFailed [ShortByteString]
+  = AuthFailed [ShortByteString] Bool
+    -- ^ The 'Bool' is for "partial success"; see RFC 4252 Section
+    -- 5.1.
   | AuthAccepted
   | AuthPkOk S.ByteString SshPubCert
+    -- ^ Returned by the server to indicate that a public key is
+    -- supported for authentication; see @SSH_MSG_USERAUTH_PK_OK@ in
+    -- RFC 4252 Section 7.
+  deriving Show
 
 -- We might want to split this into separate types for separate
 -- classes of channel events.
@@ -167,7 +173,7 @@ defaultClient = Client
   -- The empty list in 'AuthFailed []' means there are no auth methods
   -- by which the client can continue authentication. The OpenSSH
   -- client quits when receiving this.
-  , cAuthHandler      = \_ _ _ _   -> return $ AuthFailed []
+  , cAuthHandler      = \_ _ _ _   -> return $ AuthFailed [] False
   -- These non-auth requests are only allowed after auth succeeds, and
   -- so will never be called for the default 'cAuthHandler' above.
   , cOpenShell        = \_ _ _ _ _ -> return False
