@@ -6,7 +6,7 @@ import Data.List (find)
 data Named a = Named
   { nameOf     :: ShortByteString
   , namedThing :: a
-  }
+  } deriving (Show, Read)
 
 instance Functor Named where
   fmap f (Named x y) = Named x (f y)

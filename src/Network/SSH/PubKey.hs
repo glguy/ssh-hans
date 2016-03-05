@@ -22,12 +22,27 @@ import           Network.SSH.Messages
 import           Network.SSH.Protocol
 
 data PrivateKey
-  = PrivateEd25519 Ed25519.SecretKey Ed25519.PublicKey
+  = PrivateEd25519 Ed25519SecretKey Ed25519PublicKey
   | PrivateRsa     RSA.PrivateKey
   | PrivateDsa     DSA.PrivateKey
   | PrivateEcdsa256 ECDSA.PrivateKey
   | PrivateEcdsa384 ECDSA.PrivateKey
   | PrivateEcdsa521 ECDSA.PrivateKey
+  deriving (Show, Read)
+
+newtype Ed25519SecretKey = Ed25519SecretKey Ed25519.SecretKey
+newtype Ed25519PublicKey = Ed25519PublicKey Ed25519.PublicKey
+
+-- XXX TODO implement these!
+instance Show Ed25519SecretKey where
+  show (Ed25519SecretKey sk) = error "Unimplemented: Ed25519SecretKey Show instance"
+instance Read Ed25519SecretKey where
+  readsPrec _ str = error "Unimplemented: Ed25519SecretKey Read instance"
+instance Show Ed25519PublicKey where
+  show (Ed25519PublicKey sk) = error "Unimplemented: Ed25519PublicKey Show instance"
+instance Read Ed25519PublicKey where
+  readsPrec _ str = error "Unimplemented: Ed25519PublicKey Read instance"
+
 
 pointFromBytes :: ECC.Curve -> S.ByteString -> CryptoFailable ECC.Point
 pointFromBytes curve bs =
@@ -72,7 +87,7 @@ sign pk token =
       do sig <- DSA.sign priv Hash.SHA1 token
          return (SshSigDss (DSA.sign_r sig) (DSA.sign_s sig))
 
-    PrivateEd25519 priv pub ->
+    PrivateEd25519 (Ed25519SecretKey priv) (Ed25519PublicKey pub) ->
       return (SshSigEd25519 (convert (Ed25519.sign priv pub token)))
 
     PrivateEcdsa256 priv ->

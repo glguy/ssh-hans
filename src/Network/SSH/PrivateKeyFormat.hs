@@ -119,7 +119,9 @@ getPrivateKey = label "private key" $
             let (sec,pub2) = S.splitAt 32 priv
             guard (pub1 == pub2)
             case liftA2 (,) (Ed25519.secretKey sec) (Ed25519.publicKey pub1) of
-              CryptoPassed (c,d) -> return (SshPubEd25519 pub1, PrivateEd25519 c d)
+              CryptoPassed (c,d) -> let c' = Ed25519SecretKey c
+                                        d' = Ed25519PublicKey d
+                                     in return (SshPubEd25519 pub1, PrivateEd25519 c' d')
               _                  -> fail "bad ed25519 key"
 
        "ecdsa-sha2-nistp256" -> label "ecdsap256 key" $
