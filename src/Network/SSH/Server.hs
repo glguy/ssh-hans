@@ -22,6 +22,7 @@ module Network.SSH.Server (
 
   -- * RSA keys.
   , generateRsaKeyPair
+  , loadPrivateKeys
   , readRsaKeyPair
   , showRsaKeyPair
   ) where
