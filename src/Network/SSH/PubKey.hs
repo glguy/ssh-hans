@@ -35,13 +35,13 @@ newtype Ed25519PublicKey = Ed25519PublicKey Ed25519.PublicKey
 
 -- XXX TODO implement these!
 instance Show Ed25519SecretKey where
-  show (Ed25519SecretKey sk) = error "Unimplemented: Ed25519SecretKey Show instance"
+  show (Ed25519SecretKey _) = error "Unimplemented: Ed25519SecretKey Show instance"
 instance Read Ed25519SecretKey where
-  readsPrec _ str = error "Unimplemented: Ed25519SecretKey Read instance"
+  readsPrec _ _ = error "Unimplemented: Ed25519SecretKey Read instance"
 instance Show Ed25519PublicKey where
-  show (Ed25519PublicKey sk) = error "Unimplemented: Ed25519PublicKey Show instance"
+  show (Ed25519PublicKey _) = error "Unimplemented: Ed25519PublicKey Show instance"
 instance Read Ed25519PublicKey where
-  readsPrec _ str = error "Unimplemented: Ed25519PublicKey Read instance"
+  readsPrec _ _ = error "Unimplemented: Ed25519PublicKey Read instance"
 
 
 pointFromBytes :: ECC.Curve -> S.ByteString -> CryptoFailable ECC.Point
