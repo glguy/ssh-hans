@@ -55,7 +55,10 @@ import Control.Applicative ((<$>))
 data Server = Server
   { sAccept :: IO (SessionHandlers, HandleLike)
   , sAuthenticationAlgs :: [ServerCredential]
-  , sIdent :: SshIdent
+    -- | This version string should not include the leading
+    -- "SSH-2.0-", which specifies the SSH protocol version; this is
+    -- just the software version, e.g. "OpenSSH_6.9p1".
+  , sVersion :: String
     -- | Debug level greater than zero means show debug messages.
   , sDebugLevel :: Int
   }
@@ -68,7 +71,7 @@ sshServer sock = forever $
           let prefs = allAlgsSshProposalPrefs
                 { sshServerHostKeyAlgsPrefs = map nameOf creds }
           state <- initialState (sDebugLevel sock) prefs ServerRole creds
-          let v_s = sIdent sock
+          let v_s = sshIdent $ S.pack $ sVersion sock
           v_c <- sayHello state h v_s
           writeIORef (sshIdents state) (v_s,v_c)
           initialKeyExchange h state

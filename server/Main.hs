@@ -6,7 +6,6 @@ module Main where
 
 import           Network.SSH.LoadKeys
 import           Network.SSH.Messages
-import           Network.SSH.Packet
 import           Network.SSH.Server
 
 import           Control.Monad
@@ -47,9 +46,6 @@ main = withSocketsDo $
 
      sshServer (mkServer debugLevel sAuth creds sock)
 
-greeting :: SshIdent
-greeting  = sshIdent "SSH_HaLVM_2.0"
-
 mkServer :: Int -> [ServerCredential] -> [ClientCredential] -> Socket -> Server
 mkServer debugLevel auths creds sock = Server
   { sAccept = do
@@ -58,7 +54,7 @@ mkServer debugLevel auths creds sock = Server
       let sh = mkSessionHandlers creds
       return (sh, h)
   , sAuthenticationAlgs = auths
-  , sIdent = greeting
+  , sVersion = "SSH_HaLVM_2.0"
   , sDebugLevel = debugLevel
   }
 
