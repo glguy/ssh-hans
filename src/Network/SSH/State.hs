@@ -73,6 +73,19 @@ data SessionEvent
   | SessionRequest {}
   -}
 
+type CAuthHandler =
+     SshSessionId ->
+     S.ByteString ->
+     SshService ->
+     SshAuthMethod ->
+     IO AuthResult
+
+type CRequestSubsystem =
+     S.ByteString ->
+     IO SessionEvent ->
+     (Maybe S.ByteString -> IO ()) ->
+     IO Bool
+
 -- | A mix of connection state and session handlers.
 --
 -- The session backends here -- 'cOpenShell', 'cDirectTcp',
@@ -128,11 +141,7 @@ data Client = Client
   -- is SFTP. An OpenSSH client requests the subsystem @<subsystem>@
   -- using the syntax @ssh <host> -s <subsystem>@. Strangely, the @-s@
   -- arg has to come *after* the host name.
-  , cRequestSubsystem
-                 :: S.ByteString ->
-                    IO SessionEvent ->
-                    (Maybe S.ByteString -> IO ()) ->
-                    IO Bool
+  , cRequestSubsystem :: CRequestSubsystem
 
   -- | Client requested executing a command. Return True to accept.
   --
@@ -148,11 +157,7 @@ data Client = Client
                     IO Bool
 
   -- | ByteString argument is user name
-  , cAuthHandler :: SshSessionId  ->
-                    S.ByteString  ->
-                    SshService    ->
-                    SshAuthMethod ->
-                    IO AuthResult
+  , cAuthHandler :: CAuthHandler
   }
 
 -- | Default them state.
