@@ -31,26 +31,26 @@ import qualified Data.ByteString.Lazy as L
 
 -- | Initial entry point into the rekeying logic. This version
 -- sends a proposal and waits for the response.
-initialKeyExchange :: Client -> SshState -> IO ()
-initialKeyExchange client state =
+initialKeyExchange :: HandleLike -> SshState -> IO ()
+initialKeyExchange h state =
   do i_us <- mkProposal (sshProposalPrefs state)
-     sendProposal client state i_us
-     SshMsgKexInit i_them <- receive client state
-     rekeyConnection client state i_us i_them
+     sendProposal h state i_us
+     SshMsgKexInit i_them <- receive h state
+     rekeyConnection h state i_us i_them
 
 -- | Subsequent entry point into the rekeying logic. This version
 -- is called when a proposal has already been received and only
 -- sends the response.
-rekeyKeyExchange :: Client -> SshState -> SshProposal -> IO ()
-rekeyKeyExchange client state i_them =
+rekeyKeyExchange :: HandleLike -> SshState -> SshProposal -> IO ()
+rekeyKeyExchange h state i_them =
   do i_us <- mkProposal (sshProposalPrefs state)
-     sendProposal client state i_us
-     rekeyConnection client state i_us i_them
+     sendProposal h state i_us
+     rekeyConnection h state i_us i_them
 
-sendProposal :: Client -> SshState -> SshProposal -> IO ()
-sendProposal client state i_us =
+sendProposal :: HandleLike -> SshState -> SshProposal -> IO ()
+sendProposal h state i_us =
   do debug state $ "auth methods: " ++ show (sshServerHostKeyAlgs i_us)
-     send client state (SshMsgKexInit i_us)
+     send h state (SshMsgKexInit i_us)
 
 -- | Build 'SshProposal' from preferences.
 --
@@ -106,23 +106,23 @@ allAlgsSshProposalPrefs = SshProposalPrefs
       SshAlgs (map nameOf allCompression) (map nameOf allCompression)
   }
 
-rekeyConnection :: Client -> SshState -> SshProposal -> SshProposal -> IO ()
-rekeyConnection client state i_us i_them
-  | ClientRole <- sshRole state = rekeyConnection_c client state i_us i_them
-  | ServerRole <- sshRole state = rekeyConnection_s client state i_us i_them
+rekeyConnection :: HandleLike -> SshState -> SshProposal -> SshProposal -> IO ()
+rekeyConnection h state i_us i_them
+  | ClientRole <- sshRole state = rekeyConnection_c h state i_us i_them
+  | ServerRole <- sshRole state = rekeyConnection_s h state i_us i_them
   | otherwise = error "rekeyConnection: unreachable code!"
 
-rekeyConnection_s :: Client -> SshState -> SshProposal -> SshProposal -> IO ()
-rekeyConnection_s client state i_s i_c =
+rekeyConnection_s :: HandleLike -> SshState -> SshProposal -> SshProposal -> IO ()
+rekeyConnection_s h state i_s i_c =
   do (v_s, v_c) <- readIORef (sshIdents state)
      let (_i_us, i_them) = (i_s, i_c)
 
      let creds = sshAuthMethods state
-     suite    <- computeSuiteOrDie client state creds i_c i_s
+     suite    <- computeSuiteOrDie h state creds i_c i_s
 
-     handleMissedGuess client state suite i_them
+     handleMissedGuess h state suite i_them
 
-     SshMsgKexDhInit pub_c <- receive client state
+     SshMsgKexDhInit pub_c <- receive h state
      (pub_s, kexFinish)    <- kexRun (suite_kex suite)
      k <- maybe (fail "bad remote public") return (kexFinish pub_c)
 
@@ -134,26 +134,26 @@ rekeyConnection_s client state i_s i_c =
      modifyIORef' (sshSessionId state) (<|> Just sid)
 
      sig <- signSessionId (suite_host_priv suite) sid
-     send client state (SshMsgKexDhReply (suite_host_pub suite) pub_s sig)
+     send h state (SshMsgKexDhReply (suite_host_pub suite) pub_s sig)
 
-     installSecurity client state suite sid k
+     installSecurity h state suite sid k
 
-rekeyConnection_c :: Client -> SshState -> SshProposal -> SshProposal -> IO ()
-rekeyConnection_c client state i_c i_s =
+rekeyConnection_c :: HandleLike -> SshState -> SshProposal -> SshProposal -> IO ()
+rekeyConnection_c h state i_c i_s =
   do (v_s, v_c) <- readIORef (sshIdents state)
      let (_i_us, i_them) = (i_c, i_s)
 
-     suite <- computeSuiteOrDie client state [] i_c i_s
+     suite <- computeSuiteOrDie h state [] i_c i_s
 
-     handleMissedGuess client state suite i_them
+     handleMissedGuess h state suite i_them
 
      let kex = suite_kex suite
      (pub_c, kexFinish) <- kexRun kex
      debug state "ran kex! sending dhInit to server ..."
-     send client state (SshMsgKexDhInit pub_c)
+     send h state (SshMsgKexDhInit pub_c)
      debug state"sent dhInit to server! waiting for dhReply ..."
      SshMsgKexDhReply pub_cert_s pub_s sig_s <-
-       receiveSpecific SshMsgTagKexDhReply client state
+       receiveSpecific SshMsgTagKexDhReply h state
      debug state "got dhReply from server!"
      k <- maybe (fail "bad remote public") return (kexFinish pub_s)
      let sid = SshSessionId
@@ -164,63 +164,63 @@ rekeyConnection_c client state i_c i_s =
      modifyIORef' (sshSessionId state) (<|> Just sid)
      debug state "verifying server sig ..."
      when (not $ verifyServerSig pub_cert_s sig_s sid) $ do
-       send client state (SshMsgDisconnect SshDiscKexFailed
+       send h state (SshMsgDisconnect SshDiscKexFailed
                             "Unable to verify server sig!" "")
        fail "Unable to verify server sig!"
      debug state "verified server sig!"
 
-     installSecurity client state suite sid k
+     installSecurity h state suite sid k
 
 -- | When their proposal says that a kex guess packet
 -- is coming, but their guess was wrong, we must drop the next packet.
 handleMissedGuess ::
-  Client -> SshState ->
+  HandleLike -> SshState ->
   CipherSuite ->
   SshProposal {- ^ them -} ->
   IO ()
-handleMissedGuess client state suite i_them
+handleMissedGuess h state suite i_them
   | sshFirstKexFollows i_them
   , guess:_        <- sshKexAlgs i_them
   , actual         <- suite_kex_desc (suite_desc suite)
-  , guess /= actual = void (receive client state)
+  , guess /= actual = void (receive h state)
 
   | otherwise = return ()
 
--- The Client should pass @[]@ for the @serverCreds@.
+-- The client should pass @[]@ for the @serverCreds@.
 computeSuiteOrDie ::
-  Client -> SshState -> [ServerCredential] -> SshProposal -> SshProposal ->
+  HandleLike -> SshState -> [ServerCredential] -> SshProposal -> SshProposal ->
   IO CipherSuite
-computeSuiteOrDie client state serverCreds i_c i_s = do
+computeSuiteOrDie h state serverCreds i_c i_s = do
   let i_them = clientAndServer2them (sshRole state) i_c i_s
   debug state "negotiating cipher suite ..."
   debug state $ "their ssh proposal: " ++ show i_them
-  suite <- dieGracefullyOnSuiteFailure client state
+  suite <- dieGracefullyOnSuiteFailure h state
          $ computeSuite state serverCreds i_s i_c
   debug state "negotiated suite:"
   debug state $ show (suite_desc suite)
   return suite
 
 dieGracefullyOnSuiteFailure ::
-  Client -> SshState  -> Maybe CipherSuite -> IO CipherSuite
-dieGracefullyOnSuiteFailure client state Nothing = do
-  send client state (SshMsgDisconnect SshDiscProtocolError
+  HandleLike -> SshState  -> Maybe CipherSuite -> IO CipherSuite
+dieGracefullyOnSuiteFailure h state Nothing = do
+  send h state (SshMsgDisconnect SshDiscProtocolError
                        "Failed to agree on cipher suite!" "")
   fail "cipher suite negotiation failed"
 dieGracefullyOnSuiteFailure _ _ (Just cs) = return cs
 
 installSecurity ::
-  Client -> SshState -> CipherSuite ->
+  HandleLike -> SshState -> CipherSuite ->
   SshSessionId ->
   S.ByteString {- ^ shared secret -} ->
   IO ()
-installSecurity client state suite sid k =
+installSecurity h state suite sid k =
   do Just osid <- readIORef (sshSessionId state)
      let keys = genKeys (kexHash (suite_kex suite)) k sid osid
 
-     send client state SshMsgNewKeys
+     send h state SshMsgNewKeys
      transitionKeysOutgoing suite keys state
 
-     SshMsgNewKeys <- receiveSpecific SshMsgTagNewKeys client state
+     SshMsgNewKeys <- receiveSpecific SshMsgTagNewKeys h state
      transitionKeysIncoming suite keys state
 
 transitionKeysOutgoing :: CipherSuite -> Keys -> SshState -> IO ()
@@ -277,8 +277,8 @@ data CipherSuiteDesc = CipherSuiteDesc
 -- requested by the client that the server also supports is selected.
 computeSuite :: SshState -> [ServerCredential] -> SshProposal -> SshProposal ->
   Maybe CipherSuite
-computeSuite SshState{..} auths server client =
-  do let det = determineAlg server client
+computeSuite SshState{..} auths server h =
+  do let det = determineAlg server h
 
      suite_kex_desc <- det sshKexAlgs
      suite_kex      <- lookupNamed allKex suite_kex_desc

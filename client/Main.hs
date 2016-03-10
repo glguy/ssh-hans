@@ -1,4 +1,3 @@
-{-# OPTIONS_GHC -w #-} -- TODO(conathan): clean up and enable warnings.
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
@@ -11,22 +10,15 @@ import           Network.SSH.Messages
 import           Network.SSH.Rekey
 import           Network.SSH.State
 
-import qualified Graphics.Vty as Vty
 import           Network
-                   ( PortID(..), HostName, PortNumber, Socket
+                   ( PortID(..)
                    , connectTo, withSocketsDo )
 
 import           Control.Concurrent.Async
-import           Control.Exception
-import           Control.Monad ( forever, void, when, (<=<) )
-import qualified Data.ByteString as S
-import qualified Data.ByteString.Short as Short
+import           Control.Monad ( void, when )
 import qualified Data.ByteString.Char8 as S8
-import qualified Data.ByteString.Lazy as L
 import           System.Environment
-import           System.Directory (getHomeDirectory)
 import           System.IO
-import           System.Posix.IO ( fdToHandle, closeFd )
 
 #if MIN_VERSION_base(4,8,0)
 import           System.Exit ( die )
@@ -36,12 +28,6 @@ die :: String -> IO a
 die err = hPutStrLn stderr err >> exitFailure
 #endif
 
-{-
-import Openpty
-import UnixTerminalFlags
-import LoadKeys
--}
-
 -- TODO(conathan): add a default algorithm selection which is better
 -- than the current "all algorithms" default. Some ideas for what
 -- should be in the default here:
@@ -50,12 +36,6 @@ import LoadKeys
 -- TODO(conathan): implement key reexchange after threshold: RFC 4253
 -- section 9 suggests that key reexchange should happen about every
 -- hour or every GB of traffic, whichever comes first.
-
--- TODO(conathan): sanitize terminal output: RFC 4253 repeatedly
--- suggests that any output from an untrusted server be sanitized
--- before displaying to the screen, to avoid
--- terminal-control-char-based attacks. We may want to implement this
--- at some point, or at least warn users about this in the docs.
 
 -- TODO(conathan): add real argument parsing? E.g., OpenSSh uses your
 -- current username unless you put '<user>@' in from of the host name.
@@ -72,7 +52,7 @@ main = do
       ]
   let (user:host:portStr:rest) = args
   let port    = read portStr
-  handle     <- withSocketsDo $
+  handle     <- fmap handle2HandleLike $ withSocketsDo $
                   connectTo host (PortNumber $ fromIntegral port)
   let keyFile = case rest of
                   [file] -> Just file
@@ -81,8 +61,8 @@ main = do
   let getPw   = Just $ defaultGetPassword user host
   let prefs   = Just proposalPrefs
   let transportHook = Nothing
-  let channelHook   = Just $ \client state -> do
-        let e k = echoChannelHook k client state
+  let channelHook   = Just $ \h state -> do
+        let e k = echoChannelHook k h state
         void $ mapConcurrently e [10..20]
   let debugLevel = 1
 
@@ -99,10 +79,11 @@ main = do
      let creds = [(S8.pack user,pubKeys)]
   -}
 
-echoChannelHook :: Integer -> Client -> SshState -> IO ()
-echoChannelHook stop client state = do
+echoChannelHook :: Integer -> HandleLike -> SshState -> IO ()
+echoChannelHook stop h state = do
   debug state "creating a session channel ..."
-  (readEvent, write, id_us) <- runConnection client state $ do
+  let sh = defaultSessionHandlers
+  (readEvent, write, id_us) <- runConnection sh h state $ do
     id_us  <- sendChannelOpenSession
     (r, w) <- sendChannelRequestSubsystem id_us "echo"
     return (r, w, id_us)

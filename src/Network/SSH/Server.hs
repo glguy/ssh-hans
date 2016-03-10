@@ -12,13 +12,15 @@ module Network.SSH.Server (
 
   -- * Authentication and request handling.
   , AuthResult(..)
-  , Client(..)
+  , HandleLike(..)
+  , SessionHandlers(..)
   , SshAuthMethod(..)
   , SshService(..)
   , defaultAuthHandler
   , defaultCheckPw
-  , defaultClient
+  , defaultSessionHandlers
   , defaultLookupPubKeys
+  , handle2HandleLike
 
   -- * RSA keys.
   , generateRsaKeyPair
@@ -38,7 +40,7 @@ import           Network.SSH.State
 
 import           Control.Concurrent
 import qualified Control.Exception as X
-import           Control.Monad (forever, when)
+import           Control.Monad (forever)
 import           Crypto.Hash (SHA256(..), hashWith)
 import qualified Data.ByteString.Char8 as S
 import           Data.IORef (writeIORef, readIORef)
@@ -51,16 +53,17 @@ import Control.Applicative ((<$>))
 -- Public API ------------------------------------------------------------------
 
 data Server = Server
-  { sAccept :: IO Client
+  { sAccept :: IO HandleLike
   , sAuthenticationAlgs :: [ServerCredential]
   , sIdent :: SshIdent
     -- | Debug level greater than zero means show debug messages.
   , sDebugLevel :: Int
+  , sSessionHandlers :: SessionHandlers
   }
 
 sshServer :: Server -> IO ()
 sshServer sock = forever $
-  do client <- sAccept sock
+  do h <- sAccept sock
 
      forkIO $
        do let creds = sAuthenticationAlgs sock
@@ -68,30 +71,32 @@ sshServer sock = forever $
                 { sshServerHostKeyAlgsPrefs = map nameOf creds }
           state <- initialState (sDebugLevel sock) prefs ServerRole creds
           let v_s = sIdent sock
-          v_c <- sayHello state client v_s
+          v_c <- sayHello state h v_s
           writeIORef (sshIdents state) (v_s,v_c)
-          initialKeyExchange client state
+          initialKeyExchange h state
           -- Connection established!
 
-          (_user, svc) <- handleAuthentication state client
+          (_user, svc) <- handleAuthentication state sh h
           case svc of
-            SshConnection -> runConnection client state connectionService
+            SshConnection -> runConnection sh h state connectionService
             _             -> return ()
 
        `X.finally` (do
          -- Can't use 'Network.SSH.State.debug' here, since we don't
          -- have the 'state'.
-         when (sDebugLevel sock > 0) $
-           putStrLn "debug: main loop caught exception, closing client..."
-         cClose client)
+         debugWithLevel (sDebugLevel sock) $
+           "main loop caught exception, closing client..."
+         cClose h)
+  where
+  sh = sSessionHandlers sock
 
 
 -- | Exchange identification information
-sayHello :: SshState -> Client -> SshIdent -> IO SshIdent
-sayHello state client v_us =
-  do cPut client (runPutLazy $ putSshIdent v_us)
+sayHello :: SshState -> HandleLike -> SshIdent -> IO SshIdent
+sayHello state h v_us =
+  do cPut h (runPutLazy $ putSshIdent v_us)
      -- parseFrom used because ident doesn't use the normal framing
-     v_them <- parseFrom client (sshBuf state) getSshIdent
+     v_them <- parseFrom h (sshBuf state) getSshIdent
      debug state $ "their SSH version: " ++ S.unpack (sshIdentString v_them)
      return v_them
 
@@ -99,10 +104,10 @@ sayHello state client v_us =
 -- * Auth helpers
 --
 -- These auth helpers can be used to construct 'cAuthHandler' used to
--- override the default in (the poorly named)
--- 'Network.SSH.State.defaultClient'.
+-- override the default in 'Network.SSH.State.defaultSessionHandlers'.
 
--- | Helper for constructing the 'cAuthHandler' field of 'Client'.
+-- | Helper for constructing the 'cAuthHandler' field of
+-- 'SessionHandlers'.
 --
 -- The 'defaultCheckPw' and 'defaultLookupPubKeys' below can be used
 -- to supply the @checkPw@ and @lookupPubKeys@ arguments. The other
@@ -163,20 +168,21 @@ defaultLookupPubKeys lookupPubKeyFiles user = do
 ----------------------------------------------------------------
 
 handleAuthentication ::
-  SshState -> Client -> IO (S.ByteString, SshService)
-handleAuthentication state client =
+  SshState -> SessionHandlers -> HandleLike ->
+  IO (S.ByteString, SshService)
+handleAuthentication state sh h =
   do let notAvailable = do
-           send client state $
+           send h state $
              SshMsgDisconnect SshDiscServiceNotAvailable
                "(Service not available)" ""
            fail "Client requested unavailable service during auth."
 
      Just session_id <- readIORef (sshSessionId state)
-     req <- receive client state
+     req <- receive h state
      case req of
 
        SshMsgServiceRequest SshUserAuth ->
-         do send client state (SshMsgServiceAccept SshUserAuth)
+         do send h state (SshMsgServiceAccept SshUserAuth)
             authLoop
 
         where
@@ -188,20 +194,20 @@ handleAuthentication state client =
          -- 'cAuthHandler'.
          authLoop :: IO (S.ByteString, SshService)
          authLoop =
-           do userReq <- receive client state
+           do userReq <- receive h state
               case userReq of
 
                 SshMsgUserAuthRequest user svc method ->
-                  do result <- cAuthHandler client session_id user svc method
+                  do result <- cAuthHandler sh session_id user svc method
 
                      case result of
 
                        AuthAccepted ->
-                         do send client state SshMsgUserAuthSuccess
+                         do send h state SshMsgUserAuthSuccess
                             return (user, svc)
 
                        AuthPkOk keyAlg key ->
-                         do send client state
+                         do send h state
                               (SshMsgUserAuthPkOk keyAlg key)
                             authLoop
 
@@ -217,7 +223,7 @@ handleAuthentication state client =
                        -- after failing to authenticate with a first
                        -- username, and so on.
                        AuthFailed ms ps ->
-                         do send client state (SshMsgUserAuthFailure ms ps)
+                         do send h state (SshMsgUserAuthFailure ms ps)
                             authLoop
 
                 _ -> notAvailable

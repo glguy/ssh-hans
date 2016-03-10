@@ -39,33 +39,32 @@ import           Control.Applicative
 ----------------------
 
 newtype Connection a = Connection
-  { unConnection :: ReaderT (Client, SshState) IO a }
+  { unConnection :: ReaderT (SessionHandlers, HandleLike, SshState) IO a }
   deriving (Functor, Applicative, Monad, MonadIO)
 
 -- | Run a 'Connection' computation in 'IO'.
-runConnection :: Client -> SshState -> Connection a -> IO a
-runConnection client state
-  = flip runReaderT (client, state)
+runConnection ::
+  SessionHandlers -> HandleLike -> SshState -> Connection a -> IO a
+runConnection sh h state
+  = flip runReaderT (sh, h, state)
   . unConnection
 
 connectionReceive :: Connection SshMsg
 connectionReceive = Connection $
-  do (client, state) <- ask
-     liftIO (receive client state)
+  do (_, h, state) <- ask
+     liftIO (receive h state)
 
 connectionSend :: SshMsg -> Connection ()
 connectionSend msg = Connection $
-  do (client, state) <- ask
-     liftIO (send client state msg)
+  do (_, h, state) <- ask
+     liftIO (send h state msg)
 
 connectionLog :: String -> Connection ()
-connectionLog msg = Connection $
-  do (client, _) <- ask
-     liftIO (cLog client msg)
+connectionLog msg = Connection $ liftIO (cLog msg)
 
 debug' :: String -> Connection ()
 debug' msg = Connection $
-  do (_, state) <- ask
+  do (_, _, state) <- ask
      liftIO (debug state msg)
 
 ----------------------------------------------------------------
@@ -79,7 +78,7 @@ debug' msg = Connection $
 -- seems reasonable.
 connectionGetChannelTVar :: ChannelId -> Connection (TVar SshChannel)
 connectionGetChannelTVar c = do
-  (_, state)  <- Connection ask
+  (_, _, state)  <- Connection ask
   -- We only want to "lock" the single, requested channel, so we read
   -- the channels in a separate transaction.
   channels    <- liftIO . atomically $ readTVar (sshChannels state)
@@ -196,9 +195,9 @@ sendChannelRequestSubsystem id_us subsystem = do
     return channelState
   when (channelState /= SshChannelStateBackendRunning) $
     fail "subsystem request failed!"
-  (client, state) <- Connection ask
-  return ( channelRead client state id_us
-         , channelWrite client state id_us
+  (sh, h, state) <- Connection ask
+  return ( channelRead sh h state id_us
+         , channelWrite sh h state id_us
          )
 
 ----------------------------------------------------------------
@@ -214,11 +213,11 @@ sendChannelRequestSubsystem id_us subsystem = do
 connectionService :: Connection ()
 connectionService =
   do msg <- connectionReceive
-     (client, state) <- Connection ask
+     (_, h, state) <- Connection ask
      let role = sshRole state
      case msg of
        SshMsgKexInit i_them ->
-         do liftIO (rekeyKeyExchange client state i_them)
+         do liftIO (rekeyKeyExchange h state i_them)
             connectionService
 
        -- RFC 4254 Section 5: either side my open a channel generally;
@@ -386,7 +385,7 @@ channelOpenHelper ::
   SshChannelState -> ChannelId -> Word32 -> Word32 -> Word32 ->
   Connection ChannelId
 channelOpenHelper initialState' channelId_them windowSize_them maximumPacket_them origWindowSize_us =
-  do (_, state) <- Connection ask
+  do (_, _, state) <- Connection ask
      liftIO . atomically $ do
        channels <- readTVar $ sshChannels state
 
@@ -440,10 +439,10 @@ handleChannelOpenDirectTcp channelId_them initialWindowSize_them maximumPacket_t
        channelId_them initialWindowSize_them maximumPacket_them
        initialWindowSize_them
 
-     (client,state) <- Connection ask
-     success <- liftIO (cDirectTcp client host port
-                          (channelRead client state channelId_us)
-                          (channelWrite client state channelId_us))
+     (sh, h, state) <- Connection ask
+     success <- liftIO (cDirectTcp sh host port
+                          (channelRead sh h state channelId_us)
+                          (channelWrite sh h state channelId_us))
 
      connectionSend $
         if success
@@ -483,7 +482,7 @@ handleChannelClose channelId =
        (writeTChan (sshChannelEvents channel) SessionClose)
      connectionSend (SshMsgChannelClose (sshChannelId_them channel))
 
-     (_, state) <- Connection ask
+     (_, _, state) <- Connection ask
      liftIO . atomically $ modifyTVar (sshChannels state)
        (Map.delete channelId)
 
@@ -551,7 +550,7 @@ handleChannelData channelId bytes =
 handleChannelRequest ::
   SshChannelRequest -> ChannelId -> Bool -> Connection ()
 handleChannelRequest request channelId wantReply = do
-  (client, state) <- Connection ask
+  (sh, h, state) <- Connection ask
   id_them <- sshChannelId_them <$> connectionGetChannel channelId
   if sshRole state == ClientRole
   -- Most of the channel requests are supposed to be ignored by the
@@ -562,7 +561,7 @@ handleChannelRequest request channelId wantReply = do
   then connectionSend $ SshMsgChannelFailure id_them
   else do
     successIO <- connectionModifyChannelWithResult channelId
-                   (go client state)
+                   (go sh h state)
     success   <- liftIO successIO
     when wantReply $ connectionSend $
       if success
@@ -574,8 +573,10 @@ handleChannelRequest request channelId wantReply = do
   --
   -- Returns a computation which determines if the request was
   -- successful.
-  go :: Client -> SshState -> SshChannel -> STM (SshChannel, IO Bool)
-  go client state channel = case request of
+  go ::
+    SessionHandlers -> HandleLike -> SshState -> SshChannel ->
+    STM (SshChannel, IO Bool)
+  go sh h state channel = case request of
     SshChannelRequestPtyReq term winsize modes ->
       -- Only allow PTY allocation before a session backend is
       -- started. The RFC 4254 doesn't actually say to enforce this,
@@ -620,25 +621,25 @@ handleChannelRequest request channelId wantReply = do
            Nothing -> return (channel, return False)
            Just (term,winsize,termios) -> do
              let continuation =
-                   cOpenShell client term winsize termios
-                     (channelRead client state channelId)
-                     (channelWrite client state channelId)
+                   cOpenShell sh term winsize termios
+                     (channelRead sh h state channelId)
+                     (channelWrite sh h state channelId)
              guardBackendRequest continuation
 
     -- TODO(conathan): this request ("exec") and the "subsystem"
     -- request should also find out whether a PTY has been allocated.
     SshChannelRequestExec command ->
       do let continuation =
-               cRequestExec client command
-                 (channelRead client state channelId)
-                 (channelWrite client state channelId)
+               cRequestExec sh command
+                 (channelRead sh h state channelId)
+                 (channelWrite sh h state channelId)
          guardBackendRequest continuation
 
     SshChannelRequestSubsystem subsystem ->
       do let continuation =
-               cRequestSubsystem client subsystem
-                 (channelRead client state channelId)
-                 (channelWrite client state channelId)
+               cRequestSubsystem sh subsystem
+                 (channelRead sh h state channelId)
+                 (channelWrite sh h state channelId)
          guardBackendRequest continuation
 
     SshChannelRequestWindowChange winsize ->
@@ -665,7 +666,7 @@ handleChannelRequest request channelId wantReply = do
         let k' = do
               success <- k
               when success $
-                runConnection client state $
+                runConnection sh h state $
                   connectionModifyChannel channelId $ \channel' ->
                     channel'
                       { sshChannelState = SshChannelStateBackendRunning }
@@ -686,8 +687,10 @@ handleChannelRequest request channelId wantReply = do
 -- It might be better to expose the 'SessionEvent' API here, which
 -- would allow a backend to additionally send 'SessionWinsize' and
 -- 'SessionEof' events to them.
-channelWrite :: Client -> SshState -> ChannelId -> Maybe S.ByteString -> IO ()
-channelWrite client state channelId Nothing = runConnection client state $ do
+channelWrite ::
+  SessionHandlers -> HandleLike -> SshState -> ChannelId ->
+  Maybe S.ByteString -> IO ()
+channelWrite sh h state channelId Nothing = runConnection sh h state $ do
   channel <- connectionGetChannel channelId
   connectionSend (SshMsgChannelClose (sshChannelId_them channel))
   -- TODO(conathan): actually clean up the channel. We also need to
@@ -699,7 +702,7 @@ channelWrite client state channelId Nothing = runConnection client state $ do
   -- See also comment above 'sendChannelOpenSession' re safely
   -- removing channels from the channel map.
 
-channelWrite client state channelId (Just msg') = runConnection client state $ do
+channelWrite sh h state channelId (Just msg') = runConnection sh h state $ do
   id_them <- sshChannelId_them <$> connectionGetChannel channelId
   go id_them msg'
   where
@@ -723,8 +726,9 @@ channelWrite client state channelId (Just msg') = runConnection client state $ d
         go id_them next
 
 -- | Read a session event from them, accounting for window size.
-channelRead :: Client -> SshState -> ChannelId -> IO SessionEvent
-channelRead client state channelId = runConnection client state $ do
+channelRead ::
+  SessionHandlers -> HandleLike -> SshState -> ChannelId -> IO SessionEvent
+channelRead sh h state channelId = runConnection sh h state $ do
   (windowAdjustSize, event) <-
     connectionModifyChannelWithResult channelId $ \channel -> do
     event <- readTChan (sshChannelEvents channel)

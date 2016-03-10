@@ -7,7 +7,6 @@
 
 module Network.SSH.State where
 
-
 import           Network.SSH.Ciphers
 import           Network.SSH.Mac
 import           Network.SSH.Messages
@@ -24,17 +23,40 @@ import           Data.ByteString.Short (ShortByteString)
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Char8 as S8
 import qualified Data.ByteString.Lazy as L
-import           Data.Char (isControl)
+import           Data.Char ( isControl, showLitChar )
 import           Data.IORef
 import           Data.Map.Strict ( Map )
 import qualified Data.Map.Strict as Map
 import           Data.Serialize
 import           Data.Word
+import qualified System.IO as IO
 
+----------------------------------------------------------------
+-- Logging.
+
+-- | Optional debugging using 'cLog' to sanitize control chars.
 debug :: SshState -> String -> IO ()
-debug st s = do
-  when (sshDebugLevel st > 0) $
-    putStrLn $ "debug: " ++ s
+debug = debugWithLevel . sshDebugLevel
+
+-- | A version of 'debug' that can be called when no 'SshState' is
+-- available.
+debugWithLevel :: Int -> String -> IO ()
+debugWithLevel debugLevel msg = do
+  when (debugLevel > 0) $
+    cLog $ "debug: " ++ msg
+
+-- | Safe console logger.
+cLog :: String -> IO ()
+cLog = putStrLn . sanitizeControlChars
+
+-- | Replace control chars to avoid terminal attacks.
+--
+-- The SSH RFCs suggest that terminal output be sanitized.
+sanitizeControlChars :: String -> String
+sanitizeControlChars = concatMap replace
+  where
+  replace c | isControl c = showLitChar c ""
+            | otherwise = [c]
 
 -- Server Internals ------------------------------------------------------------
 
@@ -86,39 +108,43 @@ type CRequestSubsystem =
      (Maybe S.ByteString -> IO ()) ->
      IO Bool
 
--- | A mix of connection state and session handlers.
+-- | Connection state.
+--
+-- We need something we can instantiate for the 'Handle' type provided
+-- by the @network@ package, and for the @TcpSocket@ type provided by
+-- @HaNS@.
+data HandleLike = HandleLike
+  { cGet   :: Int -> IO S.ByteString
+  -- ^ Read up to 'n' bytes from network socket
+  , cPut   :: L.ByteString -> IO ()
+  -- ^ Put bytes on network socket
+  , cClose :: IO ()
+  -- ^ Close network socket
+  }
+
+handle2HandleLike :: IO.Handle -> HandleLike
+handle2HandleLike h = HandleLike
+  { cGet   = S.hGetSome h
+  , cPut   = S.hPutStr  h . L.toStrict
+  , cClose = IO.hClose  h
+  }
+
+-- | Session handlers for a server.
 --
 -- The session backends here -- 'cOpenShell', 'cDirectTcp',
 -- 'cRequestSubsystem', 'cRequestExec' -- are expected to return
 -- immediately with a boolean indicating whether the requested
 -- operation was allowed or not. So, implementers probably want to use
--- 'forkIO' to run session backends in a separate thread.
---
--- TODO(conathan): rename, e.g 'ClientState', since we are adding
--- client support. Or maybe, refactor this into client specific state
--- (if any; the 'cOpenShell' may be client only) and general "other
--- end of the connection state". From this symmetric point of view, it
--- might make sense to call the other end the client, but that could
--- be confusing since we also define client and server modules. Better
--- to call it something else ...
-data Client = Client
-  { cGet         :: Int -> IO S.ByteString
-  -- ^ Read up to 'n' bytes from network socket
-
-  -- | Put bytes on network socket
-  , cPut         :: L.ByteString -> IO ()
-
-  -- | Close network socket
-  , cClose       :: IO ()
-
-  -- | Log messages for events related to this client
-  , cLog         :: String -> IO ()
-
-  -- | TERM, initial window dimensions, termios flags, incoming events, write callback
-  , cOpenShell   :: S.ByteString -> SshWindowSize -> [(TerminalFlag, Word32)] ->
+-- 'forkIO' or similar to run session backends in a separate thread.
+data SessionHandlers = SessionHandlers
+  { cOpenShell   :: S.ByteString ->
+                    SshWindowSize ->
+                    [(TerminalFlag, Word32)] ->
                     IO SessionEvent ->
                     (Maybe S.ByteString -> IO ()) ->
                     IO Bool
+  -- ^ TERM, initial window dimensions, termios flags, incoming
+  -- events, write callback
 
   , cDirectTcp   :: S.ByteString -> Word32 ->
                     IO SessionEvent ->
@@ -160,25 +186,15 @@ data Client = Client
   , cAuthHandler :: CAuthHandler
   }
 
--- | Default them state.
---
--- The fields defined with 'error' always need to be overridden. The
--- other fields are unused when we're a client. When we're a server,
--- the other fields are used, but default to rejecting all requests,
--- including authentication.
-defaultClient :: Client
-defaultClient = Client
-  { cGet   = error "cGet undefined!"
-  , cPut   = error "cPut undefined!"
-  , cClose = error "cClose undefined!"
-  , cLog   = error "cLog undefined!"
-
+-- | Default, reject-all session handlers.
+defaultSessionHandlers :: SessionHandlers
+defaultSessionHandlers = SessionHandlers
   -- Make all requests fail immediately.
   --
   -- The empty list in 'AuthFailed []' means there are no auth methods
   -- by which the client can continue authentication. The OpenSSH
   -- client quits when receiving this.
-  , cAuthHandler      = \_ _ _ _   -> return $ AuthFailed [] False
+  { cAuthHandler      = \_ _ _ _   -> return $ AuthFailed [] False
   -- These non-auth requests are only allowed after auth succeeds, and
   -- so will never be called for the default 'cAuthHandler' above.
   , cOpenShell        = \_ _ _ _ _ -> return False
@@ -287,31 +303,31 @@ initialState sshDebugLevel prefs sshRole creds =
 newCookie :: IO SshCookie
 newCookie = SshCookie `fmap` getRandomBytes 16
 
-send :: Client -> SshState -> SshMsg -> IO ()
-send client SshState { .. } msg =
+send :: HandleLike -> SshState -> SshMsg -> IO ()
+send h SshState { .. } msg =
   modifyMVar_ sshSendState $ \(seqNum, cipher, activeCipher, mac, comp, gen) ->
     do payload <- comp (runPut (putSshMsg msg))
        let (pkt,activeCipher',gen') = putSshPacket seqNum cipher activeCipher mac gen payload
        -- TODO(conathan): how to tell if the connection is closed
        -- here? Would like to raise an error when trying to write to a
        -- closed connection, no?
-       cPut client pkt
+       cPut h pkt
        return (seqNum+1, cipher, activeCipher',mac, comp, gen')
 
 -- | Like 'receive', but fail when receiving an unexpected msg.
-receiveSpecific :: SshMsgTag -> Client -> SshState -> IO SshMsg
-receiveSpecific tag client sshState = do
-  msg <- receive client sshState
+receiveSpecific :: SshMsgTag -> HandleLike -> SshState -> IO SshMsg
+receiveSpecific tag h sshState = do
+  msg <- receive h sshState
   if sshMsgTag msg == tag
   then return msg
   else fail $ "unexpected msg of type" ++ show (sshMsgTag msg)
 
-receive :: Client -> SshState -> IO SshMsg
-receive client SshState { .. } = loop
+receive :: HandleLike -> SshState -> IO SshMsg
+receive h SshState { .. } = loop
   where
   loop =
     do (seqNum, cipher, activeCipher, mac, decomp) <- readIORef sshRecvState
-       (payload, activeCipher') <- parseFrom client sshBuf
+       (payload, activeCipher') <- parseFrom h sshBuf
                                  $ getSshPacket seqNum cipher activeCipher mac
        payload' <- decomp payload
        msg <- either fail return $ runGetLazy getSshMsg payload'
@@ -319,8 +335,9 @@ receive client SshState { .. } = loop
        writeIORef sshRecvState (seqNum1, cipher, activeCipher', mac, decomp)
        case msg of
          SshMsgIgnore _                      -> loop
-         SshMsgDebug display m _ | display   -> do cLog client (filter (not . isControl)
-                                                                       (S8.unpack m))
+         -- XXX: should do control char filtering, based on this,
+         -- everywhere!
+         SshMsgDebug display m _ | display   -> do cLog (S8.unpack m)
                                                    loop -- XXX drop controls
                                  | otherwise -> loop
          SshMsgDisconnect reason msg' _lang   ->
@@ -328,7 +345,7 @@ receive client SshState { .. } = loop
                   S8.unpack msg'
          _                                   -> return msg
 
-parseFrom :: Client -> IORef S.ByteString -> Get a -> IO a
+parseFrom :: HandleLike -> IORef S.ByteString -> Get a -> IO a
 parseFrom handle buffer body =
   do bytes <- readIORef buffer
      go (S.null bytes) (runGetPartial body bytes)

@@ -13,11 +13,10 @@ import           Control.Monad
 import           Control.Exception
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Char8 as S8
-import qualified Data.ByteString.Lazy as L
 import           Network
-                     ( PortID(..), HostName, PortNumber, withSocketsDo, listenOn
+                     ( PortID(..), withSocketsDo, listenOn
                      , accept, Socket )
-import           System.IO ( Handle, hClose )
+import           System.IO ( hClose )
 import           System.IO.Error ( isIllegalOperation )
 
 import System.Posix.IO ( fdToHandle, closeFd )
@@ -53,10 +52,13 @@ greeting  = sshIdent "SSH_HaLVM_2.0"
 
 mkServer :: Int -> [ServerCredential] -> [ClientCredential] -> Socket -> Server
 mkServer debugLevel auths creds sock = Server
-  { sAccept = mkClient creds `fmap` accept sock
+  { sAccept = do
+      (h,_,_) <- accept sock
+      return $ handle2HandleLike h
   , sAuthenticationAlgs = auths
   , sIdent = greeting
   , sDebugLevel = debugLevel
+  , sSessionHandlers = mkSessionHandlers creds
   }
 
 convertWindowSize :: SshWindowSize -> Winsize
@@ -70,14 +72,9 @@ convertWindowSize winsize =
 
 type ClientCredential = (S.ByteString, [FilePath])
 
-mkClient :: [ClientCredential] -> (Handle,HostName,PortNumber) -> Client
-mkClient creds (h,_,_) = Client { .. }
+mkSessionHandlers :: [ClientCredential] -> SessionHandlers
+mkSessionHandlers creds = SessionHandlers { .. }
   where
-  cGet   = S.hGetSome h
-  cPut   = S.hPutStr  h . L.toStrict
-  cClose =   hClose   h
-  cLog   = putStrLn
-
   cDirectTcp _host _port _events _writeback = return False
 
   cRequestExec "echo" events writeback =
