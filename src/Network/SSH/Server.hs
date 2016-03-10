@@ -53,18 +53,16 @@ import Control.Applicative ((<$>))
 -- Public API ------------------------------------------------------------------
 
 data Server = Server
-  { sAccept :: IO HandleLike
+  { sAccept :: IO (SessionHandlers, HandleLike)
   , sAuthenticationAlgs :: [ServerCredential]
   , sIdent :: SshIdent
     -- | Debug level greater than zero means show debug messages.
   , sDebugLevel :: Int
-  , sSessionHandlers :: SessionHandlers
   }
 
 sshServer :: Server -> IO ()
 sshServer sock = forever $
-  do h <- sAccept sock
-
+  do (sh, h) <- sAccept sock
      forkIO $
        do let creds = sAuthenticationAlgs sock
           let prefs = allAlgsSshProposalPrefs
@@ -87,9 +85,6 @@ sshServer sock = forever $
          debugWithLevel (sDebugLevel sock) $
            "main loop caught exception, closing client..."
          cClose h)
-  where
-  sh = sSessionHandlers sock
-
 
 -- | Exchange identification information
 sayHello :: SshState -> HandleLike -> SshIdent -> IO SshIdent

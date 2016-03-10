@@ -53,12 +53,13 @@ greeting  = sshIdent "SSH_HaLVM_2.0"
 mkServer :: Int -> [ServerCredential] -> [ClientCredential] -> Socket -> Server
 mkServer debugLevel auths creds sock = Server
   { sAccept = do
-      (h,_,_) <- accept sock
-      return $ handle2HandleLike h
+      (handle',_,_) <- accept sock
+      let h = handle2HandleLike handle'
+      let sh = mkSessionHandlers creds
+      return (sh, h)
   , sAuthenticationAlgs = auths
   , sIdent = greeting
   , sDebugLevel = debugLevel
-  , sSessionHandlers = mkSessionHandlers creds
   }
 
 convertWindowSize :: SshWindowSize -> Winsize
