@@ -14,7 +14,9 @@ module Network.SSH.Server (
   , AuthResult(..)
   , HandleLike(..)
   , SessionHandlers(..)
+  , SshAlgs(..)
   , SshAuthMethod(..)
+  , SshProposalPrefs(..)
   , SshService(..)
   , defaultAuthHandler
   , defaultCheckPw
