@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Key exchange and key generation
@@ -150,7 +149,7 @@ runDh params =
 
      let DH.PublicNumber pub_s = DH.calculatePublic params priv
 
-         computeSecret raw_pub_c = Just (runPut (putMpInt shared))
+         computeSecret raw_pub_c = Just (runPut (putMpInt (os2ip shared)))
            where
            DH.SharedKey shared = DH.getShared params priv
                                $ DH.PublicNumber
@@ -188,7 +187,7 @@ runEcdh curve =
          computeSecret raw_pub_c
            | CryptoPassed pub_c <- pointFromBytes curve raw_pub_c
            , let ECDH.SharedKey shared = ECDH.getShared curve priv pub_c
-           = Just (runPut (putMpInt shared))
+           = Just (runPut (putMpInt (os2ip shared)))
 
            | otherwise = Nothing
 
@@ -211,12 +210,7 @@ runCurve25519dh ::
 runCurve25519dh =
 
      -- fails if key isn't 32 bytes long
-#if MIN_VERSION_cryptonite(0,9,0)
   do CryptoPassed priv <-
-#else
-     -- The cryptonite-0.8 version.
-  do Right priv <-
-#endif
        fmap C25519.secretKey (getRandomBytes 32 :: IO S.ByteString)
 
      -- Section 2: Transmit public key as "string"
@@ -224,12 +218,7 @@ runCurve25519dh =
 
          computeSecret raw_pub_c
              -- fails if key isn't 32 bytes long
-#if MIN_VERSION_cryptonite(0,9,0)
            | CryptoPassed pub_c <-
-#else
-             -- The cryptonite-0.8 version.
-           | Right pub_c <-
-#endif
                C25519.publicKey raw_pub_c
 
              -- Section 4.3: Treat shared key bytes as "integer"
