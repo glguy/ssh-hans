@@ -204,6 +204,7 @@ defaultSessionHandlers = SessionHandlers
   }
 
 ----------------------------------------------------------------
+-- Roles
 
 data Role = ClientRole | ServerRole
   deriving (Eq,Show)
@@ -303,6 +304,9 @@ initialState sshDebugLevel prefs sshRole creds =
 newCookie :: IO SshCookie
 newCookie = SshCookie `fmap` getRandomBytes 16
 
+----------------------------------------------------------------
+-- Network IO
+
 send :: HandleLike -> SshState -> SshMsg -> IO ()
 send h SshState { .. } msg =
   modifyMVar_ sshSendState $ \(seqNum, cipher, activeCipher, mac, comp, gen) ->
@@ -372,7 +376,7 @@ parseFrom handle buffer body =
 -- | Channel states.
 --
 -- These states were created with "session" channels in mind, and may
--- need to refined to handle other channel types. For example,
+-- need to be refined to handle other channel types. For example,
 -- requesting a session backend on a non-session channel does not make
 -- sense.
 data SshChannelState
@@ -385,11 +389,11 @@ data SshChannelState
   | SshChannelStateBackendRequested -- ^ Backend ("shell", "exec", or "subsystem")
                                     --   request sent
   | SshChannelStateBackendRunning   -- ^ Backend request confirmation received.
-  deriving (Eq, Show)
-{-
   | SshChannelStateCloseSent        -- ^ A channel close has been sent.
-  | SshChannelStateClosed           -- ^ A channel close has been received.
--}
+  | SshChannelStateCloseReceived    -- ^ A channel close has been received.
+  | SshChannelStateClosed           -- ^ A channel close has been sent and received.
+  deriving (Eq, Show)
+
 -- | SshChannelStateError
 
 -- | The state of an SSH Channel.
@@ -406,8 +410,12 @@ data SshChannel = SshChannel
   , sshChannelWindowSize_them    :: Word32
   , sshChannelMaximumPacket_them :: Word32
   , sshChannelPty                :: (Maybe (S.ByteString, SshWindowSize, [(TerminalFlag, Word32)]))
-  , sshChannelEvents             :: TChan SessionEvent
-
+    -- | Events we received from them over the network, that are yet
+    -- to be consumed by the session handler underlying the channel.
+  , sshChannelEventsReceived     :: TChan SessionEvent
+    -- | Events produced by our session handler that we need to send
+    -- to them over the network.
+  , sshChannelEventsToSend       :: TChan SessionEvent
   -- | The original/max data window size.
   , sshChannelOrigWindowSize_us :: Word32
   -- | The number of bytes 'SessionEvent's in our 'sshChannelEvents'

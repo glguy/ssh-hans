@@ -196,8 +196,8 @@ sendChannelRequestSubsystem id_us subsystem = do
   when (channelState /= SshChannelStateBackendRunning) $
     fail "subsystem request failed!"
   (sh, h, state) <- Connection ask
-  return ( channelRead sh h state id_us
-         , channelWrite sh h state id_us
+  return ( mkChannelReader sh h state id_us
+         , mkChannelWriter sh h state id_us
          )
 
 ----------------------------------------------------------------
@@ -220,7 +220,7 @@ connectionService =
          do liftIO (rekeyKeyExchange h state i_them)
             connectionService
 
-       -- RFC 4254 Section 5: either side my open a channel generally;
+       -- RFC 4254 Section 5: either side may open a channel generally;
        -- RFC 4254 Section 6.1: clients should reject session-channel
        -- open requests.
        --
@@ -362,7 +362,7 @@ handleChannelSuccessOrFailure success id_us = do
 
   case channelState of
     SshChannelStateBackendRunning -> do
-      let events = sshChannelEvents channel
+      let events = sshChannelEventsReceived channel
       liftIO . atomically $
         writeTChan events (SessionRequestResponse success)
     SshChannelStateBackendRequested ->
@@ -389,7 +389,8 @@ channelOpenHelper initialState' channelId_them windowSize_them maximumPacket_the
      liftIO . atomically $ do
        channels <- readTVar $ sshChannels state
 
-       events <- newTChan
+       eventsReceived <- newTChan
+       eventsToSend <- newTChan
        let nextChannelId_us =
              case Map.maxViewWithKey channels of
                Nothing        -> 0
@@ -402,7 +403,8 @@ channelOpenHelper initialState' channelId_them windowSize_them maximumPacket_the
                        , sshChannelMaximumPacket_them = maximumPacket_them
                        , sshChannelEnv                = []
                        , sshChannelPty                = Nothing
-                       , sshChannelEvents             = events
+                       , sshChannelEventsReceived     = eventsReceived
+                       , sshChannelEventsToSend       = eventsToSend
                        , sshChannelOrigWindowSize_us  = origWindowSize_us
                        , sshChannelFifoSize           = 0
                        , sshChannelProcessedSize      = 0
@@ -424,7 +426,7 @@ handleChannelOpenSession channelId_them initialWindowSize_them maximumPacket_the
        channelId_them initialWindowSize_them maximumPacket_them
        initialWindowSize_them
      -- In our response we offer them the same window size and max
-     -- packet size that they offered we.
+     -- packet size that they offered us.
      connectionSend $
        SshMsgChannelOpenConfirmation
          channelId_them
@@ -441,8 +443,8 @@ handleChannelOpenDirectTcp channelId_them initialWindowSize_them maximumPacket_t
 
      (sh, h, state) <- Connection ask
      success <- liftIO (cDirectTcp sh host port
-                          (channelRead sh h state channelId_us)
-                          (channelWrite sh h state channelId_us))
+                          (mkChannelReader sh h state channelId_us)
+                          (mkChannelWriter sh h state channelId_us))
 
      connectionSend $
         if success
@@ -470,7 +472,7 @@ handleChannelWindowAdjust channelId adj =
 handleChannelEof :: ChannelId -> Connection ()
 handleChannelEof channelId =
   -- This message does not affect window size accounting.
-  do events <- sshChannelEvents <$> connectionGetChannel channelId
+  do events <- sshChannelEventsReceived <$> connectionGetChannel channelId
      liftIO . atomically $ (writeTChan events SessionEof)
 
 -- | Handle channel close from them.
@@ -479,7 +481,7 @@ handleChannelClose channelId =
   -- This message does not affect window size accounting.
   do channel <- connectionGetChannel channelId
      liftIO . atomically $
-       (writeTChan (sshChannelEvents channel) SessionClose)
+       (writeTChan (sshChannelEventsReceived channel) SessionClose)
      connectionSend (SshMsgChannelClose (sshChannelId_them channel))
 
      (_, _, state) <- Connection ask
@@ -515,7 +517,7 @@ handleChannelData channelId bytes =
             toInteger dataSize
        then return (channel, True)
        else do
-         writeTChan (sshChannelEvents channel) (SessionData bytes)
+         writeTChan (sshChannelEventsReceived channel) (SessionData bytes)
          let !newFifoSize = oldFifoSize + dataSize
          let channel' = channel { sshChannelFifoSize = newFifoSize }
          return (channel', False)
@@ -622,8 +624,8 @@ handleChannelRequest request channelId wantReply = do
            Just (term,winsize,termios) -> do
              let continuation =
                    cOpenShell sh term winsize termios
-                     (channelRead sh h state channelId)
-                     (channelWrite sh h state channelId)
+                     (mkChannelReader sh h state channelId)
+                     (mkChannelWriter sh h state channelId)
              guardBackendRequest continuation
 
     -- TODO(conathan): this request ("exec") and the "subsystem"
@@ -631,15 +633,15 @@ handleChannelRequest request channelId wantReply = do
     SshChannelRequestExec command ->
       do let continuation =
                cRequestExec sh command
-                 (channelRead sh h state channelId)
-                 (channelWrite sh h state channelId)
+                 (mkChannelReader sh h state channelId)
+                 (mkChannelWriter sh h state channelId)
          guardBackendRequest continuation
 
     SshChannelRequestSubsystem subsystem ->
       do let continuation =
                cRequestSubsystem sh subsystem
-                 (channelRead sh h state channelId)
-                 (channelWrite sh h state channelId)
+                 (mkChannelReader sh h state channelId)
+                 (mkChannelWriter sh h state channelId)
          guardBackendRequest continuation
 
     SshChannelRequestWindowChange winsize ->
@@ -647,7 +649,7 @@ handleChannelRequest request channelId wantReply = do
                -- Sending the winsize event does not affect data
                -- windows, so we don't need to do accounting here as
                -- in 'handleChannelData'.
-               writeTChan (sshChannelEvents channel)
+               writeTChan (sshChannelEventsReceived channel)
                  (SessionWinsize winsize)
                return True
          return (channel, continuation)
@@ -680,36 +682,95 @@ handleChannelRequest request channelId wantReply = do
 -- would make sense to generalize them for internal use in this module
 -- as well.
 
--- | Write data to them, accounting for their window size.
+-- | Create a channel msg writer for a backend.
 --
 -- Sending 'Nothing' closes the connection.
 --
 -- It might be better to expose the 'SessionEvent' API here, which
 -- would allow a backend to additionally send 'SessionWinsize' and
 -- 'SessionEof' events to them.
-channelWrite ::
+mkChannelWriter ::
   SessionHandlers -> HandleLike -> SshState -> ChannelId ->
   Maybe S.ByteString -> IO ()
-channelWrite sh h state channelId Nothing = runConnection sh h state $ do
-  channel <- connectionGetChannel channelId
-  connectionSend (SshMsgChannelClose (sshChannelId_them channel))
-  -- TODO(conathan): actually clean up the channel. We also need to
-  -- handle (somewhere else) the case where we receive a "channel
-  -- close" over the network: notify the backend and let it send a
-  -- channel close back? Or, just send the close ourselves, and simply
-  -- notify the backend that it happened.
-  --
-  -- See also comment above 'sendChannelOpenSession' re safely
-  -- removing channels from the channel map.
+mkChannelWriter sh h state id_us = \mmsg -> runConnection sh h state $
+  enqueueChannelWrite id_us $ case mmsg of
+    Nothing -> SessionClose
+    Just msg -> SessionData msg
 
-channelWrite sh h state channelId (Just msg') = runConnection sh h state $ do
-  id_them <- sshChannelId_them <$> connectionGetChannel channelId
-  go id_them msg'
+-- | Create a channel msg reader for a backend.
+-- Reading 'Nothing' means they sent us SSH_MSG_CHANNEL_CLOSE.
+mkChannelReader ::
+  SessionHandlers -> HandleLike -> SshState -> ChannelId ->
+  IO SessionEvent
+mkChannelReader sh h state id_us = runConnection sh h state $
+  channelRead id_us
+
+
+-- | Enqueue a session event for sending to them.
+enqueueChannelWrite :: ChannelId -> SessionEvent -> Connection ()
+enqueueChannelWrite id_us event = do
+  channel <- connectionGetChannel id_us
+  liftIO . atomically $
+    writeTChan (sshChannelEventsToSend channel) event
+
+-- | Write queued data to them.
+--
+-- This function should be 'forkIO'd in the channel setup code.
+channelWriteLoop :: ChannelId -> Connection ()
+channelWriteLoop id_us = do
+  id_them <- sshChannelId_them <$> connectionGetChannel id_us
+  let loop = do
+        eventsToSend <- sshChannelEventsToSend <$>
+          connectionGetChannel id_us
+        event <- liftIO . atomically $ readTChan eventsToSend
+        send' event
+      send' SessionClose = do
+        connectionSend $ SshMsgChannelClose id_them
+        connectionModifyChannel id_us $ \channel' ->
+          let oldSt = sshChannelState channel'
+              newSt = case oldSt of
+                SshChannelStateCloseReceived -> SshChannelStateClosed
+                _                            -> SshChannelStateCloseSent
+          in channel' { sshChannelState = newSt }
+        -- Don't loop anymore, since we can't send any more messages
+        -- after closing the channel.
+      send' SessionEof = do
+        connectionSend $ SshMsgChannelEof id_them
+        loop
+      send' (SessionData msg) = do
+        sendSessionData id_us msg
+        loop
+      send' (SessionWinsize winsize) = do
+        connectionSend $
+          -- SSH Connection Protocol Section 6.7.
+          SshMsgChannelRequest
+            (SshChannelRequestWindowChange winsize)
+            id_them
+            False
+        loop
+      send' (SessionRequestResponse success) = do
+        connectionSend $
+          if success
+          then SshMsgChannelSuccess id_them
+          else SshMsgChannelFailure id_them
+        loop
+  loop
+
+-- | Send them session data, accounting for window size.
+sendSessionData :: ChannelId -> S.ByteString -> Connection ()
+sendSessionData id_us msg' = do
+  id_them <- sshChannelId_them <$> connectionGetChannel id_us
+  loop id_them msg'
   where
-  go id_them msg
+  loop id_them msg
+      -- We don't actually send empty messages since messages can be
+      -- split up arbitrarily anyway. An empty message could arguably
+      -- still be meaningful, assuming we don't send pointless empty
+      -- messages, but the number of non-empty messages is not itself
+      -- meaningful.
     | S.null msg = return ()
     | otherwise =
-     do sendSize <- connectionModifyChannelWithResult channelId $ \channel ->
+     do sendSize <- connectionModifyChannelWithResult id_us $ \channel ->
           do let window = sshChannelWindowSize_them channel
              when (window == 0) retry
              let sendSize = minimum [ sshChannelMaximumPacket_them channel
@@ -723,15 +784,15 @@ channelWrite sh h state channelId (Just msg') = runConnection sh h state $ do
 
         let (current,next) = S.splitAt sendSize msg
         connectionSend (SshMsgChannelData id_them current)
-        go id_them next
+        loop id_them next
 
--- | Read a session event from them, accounting for window size.
-channelRead ::
-  SessionHandlers -> HandleLike -> SshState -> ChannelId -> IO SessionEvent
-channelRead sh h state channelId = runConnection sh h state $ do
+-- | Read a queued session event from them, accounting for window
+-- size.
+channelRead :: ChannelId -> Connection SessionEvent
+channelRead id_us = do
   (windowAdjustSize, event) <-
-    connectionModifyChannelWithResult channelId $ \channel -> do
-    event <- readTChan (sshChannelEvents channel)
+    connectionModifyChannelWithResult id_us $ \channel -> do
+    event <- readTChan (sshChannelEventsReceived channel)
     case event of
       SessionData bs -> do
         let origWindowSize    = sshChannelOrigWindowSize_us channel
@@ -770,7 +831,7 @@ channelRead sh h state channelId = runConnection sh h state $ do
       _ -> return (channel, (0, event))
 
   when (windowAdjustSize > 0) $ do
-    id_them <- sshChannelId_them <$> connectionGetChannel channelId
+    id_them <- sshChannelId_them <$> connectionGetChannel id_us
     debug' $
       "sent window adjust: channel: " ++ show id_them ++
       ", adjust size: " ++ show windowAdjustSize
