@@ -19,7 +19,9 @@ import           Network.SSH.Rekey
 import           Network.SSH.State
 import           Network.SSH.TerminalModes
 
+import           Control.Concurrent ( ThreadId, forkIO )
 import           Control.Concurrent.STM
+import           Control.Concurrent.STM.TVar ( modifyTVar' )
 import           Control.Monad
 
 import qualified Data.ByteString as S
@@ -118,16 +120,16 @@ connectionModifyChannelWithResult c f = do
     writeTVar channelTVar channel'
     return result
 
+-- | Fork a 'Connection' computation using 'forkIO'.
+forkIOConnection :: Connection () -> Connection ThreadId
+forkIOConnection action = do
+  (sh, h, state) <- Connection ask
+  liftIO . forkIO $ runConnection sh h state action
+
 ----------------------------------------------------------------
 -- * Client-oriented channel operations.
 
 -- | Send a channel-open request in a client.
---
--- TODO(conathan): if we instead returned a 'TVar SshChannel' here,
--- and maybe embedded our channel id in the 'SshChannel', we'd be free
--- to delete a channel from the channel map without worrying about a
--- client later looking it up by id and failing. In any case, we need
--- a better story around closing and cleaning up channels.
 sendChannelOpenSession :: Connection ChannelId
 sendChannelOpenSession = do
   -- Some of the channel state corresponding to them is not defined
@@ -295,10 +297,6 @@ connectionService =
          do handleChannelWindowAdjust chan adj
             connectionService
 
-       SshMsgDisconnect reason _desc _lang ->
-            connectionLog ("Disconnect: " ++ show reason)
-            -- TODO: tear down channels
-
        _ ->
          do connectionLog ("Unhandled message: " ++ show msg)
             connectionService
@@ -314,6 +312,8 @@ connectionService =
 handleChannelOpenConfirmation :: ChannelId -> ChannelId -> Word32 -> Word32 -> Connection ()
 handleChannelOpenConfirmation
   channelId_us channelId_them initialWindowSize_them maximumPacket_them = do
+  debug' $ "channel open confirmation: id_us = "++
+           show channelId_us++", id_them = "++show channelId_them
   success <- connectionModifyChannelWithResult channelId_us $ \channel ->
    if sshChannelState channel == SshChannelStateOpenRequested
    then do
@@ -381,12 +381,20 @@ handleChannelSuccessOrFailure success id_us = do
                 show channelState
 
 -- | Common code for opening a channel in a client or a server.
+--
+-- Returns our channel ID for the new channel. The argument channel ID
+-- is their ID for the new channel.
 channelOpenHelper ::
   SshChannelState -> ChannelId -> Word32 -> Word32 -> Word32 ->
   Connection ChannelId
 channelOpenHelper initialState' channelId_them windowSize_them maximumPacket_them origWindowSize_us =
   do (_, _, state) <- Connection ask
-     liftIO . atomically $ do
+     id_us <- allocateChannelState state
+     forkChannelWriteLoop id_us
+     forkChannelCloseWatchDog id_us
+     return id_us
+  where
+    allocateChannelState state = liftIO . atomically $ do
        channels <- readTVar $ sshChannels state
 
        eventsReceived <- newTChan
@@ -415,24 +423,63 @@ channelOpenHelper initialState' channelId_them windowSize_them maximumPacket_the
          (Map.insert nextChannelId_us channelTVar channels)
        return nextChannelId_us
 
+    forkChannelWriteLoop id_us = do
+      writeLoopThreadId <- forkIOConnection $
+        channelWriteLoop id_us
+      debug' $ "started channel write loop: " ++
+               show writeLoopThreadId
+
+    forkChannelCloseWatchDog id_us = do
+      channelCloseWatchDogThreadId <- forkIOConnection $
+        channelCloseWatchDog id_us
+      debug' $ "started channel close watch dog: " ++
+               show channelCloseWatchDogThreadId
+
 -- | Handle a channel-open request of session type.
 handleChannelOpenSession :: Word32 -> Word32 -> Word32 -> Connection ()
 handleChannelOpenSession channelId_them initialWindowSize_them maximumPacket_them =
   do debug' $
-       "starting session: channel: " ++ show channelId_them ++
-       ", window size: " ++ show initialWindowSize_them ++
-       ", packet size: " ++ show maximumPacket_them
-     channelId_us <- channelOpenHelper SshChannelStateOpen
+       "starting session: id_them = " ++ show channelId_them ++
+       ", window size = " ++ show initialWindowSize_them ++
+       ", packet size = " ++ show maximumPacket_them
+     id_us <- channelOpenHelper SshChannelStateOpen
        channelId_them initialWindowSize_them maximumPacket_them
        initialWindowSize_them
+     debug' $ "starting session: id_us = "++show id_us
      -- In our response we offer them the same window size and max
      -- packet size that they offered us.
      connectionSend $
        SshMsgChannelOpenConfirmation
          channelId_them
-         channelId_us
+         id_us
          initialWindowSize_them
          maximumPacket_them
+
+-- | Watch for the channel to enter the closed state, and delete it
+-- when this happens.
+channelCloseWatchDog :: ChannelId -> Connection ()
+channelCloseWatchDog id_us = do
+  channelTVar <- connectionGetChannelTVar id_us
+  liftIO . atomically $ do
+    channel <- readTVar channelTVar
+    when (sshChannelState channel /= SshChannelStateClosed) retry
+  debug' $ "deleting channel: id_us = "++show id_us
+  deleteChannel id_us
+
+  (_, _, state) <- Connection ask
+  channels <- liftIO . atomically $ readTVar (sshChannels state)
+  debug' $ "remaining channels: id_us = "++show (Map.keys channels)
+
+-- | Delete a channel.
+--
+-- According to the SSH protocol, channels are normally deleted after
+-- a party has both sent and received a SSH_MSG_CHANNEL_CLOSE message
+-- on that channel.
+deleteChannel :: ChannelId -> Connection ()
+deleteChannel channelId = do
+  (_, _, state) <- Connection ask
+  liftIO . atomically $ modifyTVar' (sshChannels state)
+    (Map.delete channelId)
 
 -- | Handle a channel-open request of direct-tcp-ip type.
 handleChannelOpenDirectTcp :: ChannelId -> Word32 -> Word32 -> S.ByteString -> Word32 -> Connection ()
@@ -476,17 +523,18 @@ handleChannelEof channelId =
      liftIO . atomically $ (writeTChan events SessionEof)
 
 -- | Handle channel close from them.
+--
+-- Here we just enqueue their channel close message into the session
+-- queue. We don't change the channel state until the channel close
+-- message is read from the channel queue and delivered to the channel
+-- backend in 'channelRead'. The 'channelCloseWatchDog' is responsible
+-- for deleting the channel when both ends have closed it.
 handleChannelClose :: ChannelId -> Connection ()
 handleChannelClose channelId =
   -- This message does not affect window size accounting.
   do channel <- connectionGetChannel channelId
      liftIO . atomically $
        (writeTChan (sshChannelEventsReceived channel) SessionClose)
-     connectionSend (SshMsgChannelClose (sshChannelId_them channel))
-
-     (_, _, state) <- Connection ask
-     liftIO . atomically $ modifyTVar (sshChannels state)
-       (Map.delete channelId)
 
 -- | Handle channel data from them.
 --
@@ -692,19 +740,22 @@ handleChannelRequest request channelId wantReply = do
 mkChannelWriter ::
   SessionHandlers -> HandleLike -> SshState -> ChannelId ->
   Maybe S.ByteString -> IO ()
-mkChannelWriter sh h state id_us = \mmsg -> runConnection sh h state $
+mkChannelWriter sh h state id_us = \mmsg -> runConnection sh h state $ do
+  -- debug' $ "mkChannelWriter: enqueuing "++showsPrec 11 (S.length <$> mmsg) ""
   enqueueChannelWrite id_us $ case mmsg of
     Nothing -> SessionClose
     Just msg -> SessionData msg
 
 -- | Create a channel msg reader for a backend.
--- Reading 'Nothing' means they sent us SSH_MSG_CHANNEL_CLOSE.
+--
+-- A backend that reads 'SessionClose' without having sent it first is
+-- expected to reply with a 'SessionClose' at some point and then
+-- exit.
 mkChannelReader ::
   SessionHandlers -> HandleLike -> SshState -> ChannelId ->
   IO SessionEvent
 mkChannelReader sh h state id_us = runConnection sh h state $
   channelRead id_us
-
 
 -- | Enqueue a session event for sending to them.
 enqueueChannelWrite :: ChannelId -> SessionEvent -> Connection ()
@@ -718,43 +769,43 @@ enqueueChannelWrite id_us event = do
 -- This function should be 'forkIO'd in the channel setup code.
 channelWriteLoop :: ChannelId -> Connection ()
 channelWriteLoop id_us = do
+  eventsToSend <- sshChannelEventsToSend <$>
+    connectionGetChannel id_us
+  event <- liftIO . atomically $ readTChan eventsToSend
+  sendSessionEvent id_us event
+  if event == SessionClose
+  -- Don't loop anymore, since we can't send any more messages
+  -- after closing the channel.
+  then debug' $ "sent channel close"
+  else channelWriteLoop id_us
+
+-- | Send them a session event.
+sendSessionEvent :: ChannelId -> SessionEvent -> Connection ()
+sendSessionEvent id_us event = do
   id_them <- sshChannelId_them <$> connectionGetChannel id_us
-  let loop = do
-        eventsToSend <- sshChannelEventsToSend <$>
-          connectionGetChannel id_us
-        event <- liftIO . atomically $ readTChan eventsToSend
-        send' event
-      send' SessionClose = do
-        connectionSend $ SshMsgChannelClose id_them
-        connectionModifyChannel id_us $ \channel' ->
-          let oldSt = sshChannelState channel'
-              newSt = case oldSt of
-                SshChannelStateCloseReceived -> SshChannelStateClosed
-                _                            -> SshChannelStateCloseSent
-          in channel' { sshChannelState = newSt }
-        -- Don't loop anymore, since we can't send any more messages
-        -- after closing the channel.
-      send' SessionEof = do
-        connectionSend $ SshMsgChannelEof id_them
-        loop
-      send' (SessionData msg) = do
-        sendSessionData id_us msg
-        loop
-      send' (SessionWinsize winsize) = do
-        connectionSend $
-          -- SSH Connection Protocol Section 6.7.
-          SshMsgChannelRequest
-            (SshChannelRequestWindowChange winsize)
-            id_them
-            False
-        loop
-      send' (SessionRequestResponse success) = do
-        connectionSend $
-          if success
-          then SshMsgChannelSuccess id_them
-          else SshMsgChannelFailure id_them
-        loop
-  loop
+  case event of
+    SessionClose -> do
+      connectionSend $ SshMsgChannelClose id_them
+      connectionModifyChannel id_us $ \channel' ->
+        let oldSt = sshChannelState channel'
+            newSt = case oldSt of
+              SshChannelStateCloseReceived -> SshChannelStateClosed
+              _                            -> SshChannelStateCloseSent
+        in channel' { sshChannelState = newSt }
+    SessionEof -> connectionSend $ SshMsgChannelEof id_them
+    SessionData msg -> sendSessionData id_us msg
+    SessionWinsize winsize -> do
+      connectionSend $
+        -- SSH Connection Protocol Section 6.7.
+        SshMsgChannelRequest
+          (SshChannelRequestWindowChange winsize)
+          id_them
+          False
+    SessionRequestResponse success -> do
+      connectionSend $
+        if success
+        then SshMsgChannelSuccess id_them
+        else SshMsgChannelFailure id_them
 
 -- | Send them session data, accounting for window size.
 sendSessionData :: ChannelId -> S.ByteString -> Connection ()
@@ -790,6 +841,7 @@ sendSessionData id_us msg' = do
 -- size.
 channelRead :: ChannelId -> Connection SessionEvent
 channelRead id_us = do
+  -- Compute window adjustment necessary, if any.
   (windowAdjustSize, event) <-
     connectionModifyChannelWithResult id_us $ \channel -> do
     event <- readTChan (sshChannelEventsReceived channel)
@@ -830,10 +882,21 @@ channelRead id_us = do
           return (channel', (0, event))
       _ -> return (channel, (0, event))
 
+  -- Adjust window size if necessary.
   when (windowAdjustSize > 0) $ do
     id_them <- sshChannelId_them <$> connectionGetChannel id_us
     debug' $
       "sent window adjust: channel: " ++ show id_them ++
       ", adjust size: " ++ show windowAdjustSize
     connectionSend (SshMsgChannelWindowAdjust id_them windowAdjustSize)
+
+  -- Change channel closure state if necessary.
+  when (event == SessionClose) $ do
+    connectionModifyChannel id_us $ \channel ->
+      let oldSt = sshChannelState channel
+          newSt = case oldSt of
+            SshChannelStateCloseSent -> SshChannelStateClosed
+            _                        -> SshChannelStateCloseReceived
+          in channel { sshChannelState = newSt }
+    debug' $ "received channel close in session backend"
   return event
