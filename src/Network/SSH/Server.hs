@@ -68,8 +68,8 @@ data Server = Server
 sshServer :: Server -> IO ()
 sshServer sock = forever $
   do (sh, h) <- sAccept sock
-     forkIO $
-       do let creds = sAuthenticationAlgs sock
+     let handleClient = do
+          let creds = sAuthenticationAlgs sock
           let prefs = allAlgsSshProposalPrefs
                 { sshServerHostKeyAlgsPrefs = map nameOf creds }
           state <- initialState (sDebugLevel sock) prefs ServerRole creds
@@ -83,13 +83,20 @@ sshServer sock = forever $
           case svc of
             SshConnection -> runConnection sh h state connectionService
             _             -> return ()
-
-       `X.finally` (do
-         -- Can't use 'Network.SSH.State.debug' here, since we don't
-         -- have the 'state'.
-         debugWithLevel (sDebugLevel sock) $
-           "main loop caught exception, closing client..."
-         cClose h)
+     let handleDisconnectException SshMsgDisconnectException{..} = do
+           debug' $ "client disconnected: "++show smdeReason
+         -- I don't think we need to worry about cleaning up channels,
+         -- since the entire SSH state for the client is about to go
+         -- out of scope when this thread dies.
+     let cleanup = do
+           debug' "main loop exiting, closing client connection"
+           -- TODO: add back @cClose h@.
+     forkIO $ (handleClient `X.catch` handleDisconnectException)
+              `X.finally` cleanup
+  where
+    -- Can't use 'Network.SSH.State.debug' here, since we don't have
+    -- the 'state'.
+    debug' msg = debugWithLevel (sDebugLevel sock) msg
 
 -- | Exchange identification information
 sayHello :: SshState -> HandleLike -> SshIdent -> IO SshIdent

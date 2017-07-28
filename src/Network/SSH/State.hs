@@ -17,12 +17,13 @@ import           Network.SSH.TerminalModes
 
 import           Control.Concurrent
 import           Control.Concurrent.STM ( TChan, TVar, newTVarIO )
+import           Control.Exception ( Exception, throwIO )
 import           Control.Monad
 import           Crypto.Random
-import           Data.ByteString.Short (ShortByteString)
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Char8 as S8
 import qualified Data.ByteString.Lazy as L
+import           Data.ByteString.Short (ShortByteString)
 import           Data.Char ( isControl, showLitChar )
 import           Data.IORef
 import           Data.Map.Strict ( Map )
@@ -95,6 +96,7 @@ data SessionEvent
   {-
   | SessionRequest {}
   -}
+  deriving (Eq, Show)
 
 type CAuthHandler =
      SshSessionId ->
@@ -327,6 +329,13 @@ receiveSpecific tag h sshState = do
   then return msg
   else fail $ "unexpected msg of type" ++ show (sshMsgTag msg)
 
+-- | Receive a message over the network.
+--
+-- Raises a 'SsshMsgDisconnectException' exception when receiving
+-- 'SshMsgDisconnect'. Somewhere up the call stack someone should
+-- catch this exception and do any clean up necessary: servers should
+-- clean up all client state for the connection, and clients should
+-- shut down.
 receive :: HandleLike -> SshState -> IO SshMsg
 receive h SshState { .. } = loop
   where
@@ -343,10 +352,19 @@ receive h SshState { .. } = loop
          SshMsgDebug display m _ | display   -> do safeLog (S8.unpack m)
                                                    loop -- XXX drop controls
                                  | otherwise -> loop
-         SshMsgDisconnect reason msg' _lang   ->
-           fail $ "other end disconnected: " ++ show reason ++ ": " ++
-                  S8.unpack msg'
+         SshMsgDisconnect reason msg' lang   ->
+           throwIO $ SshMsgDisconnectException reason msg' lang
          _                                   -> return msg
+
+-- | Exception raised when 'SshMsgDisconnect' is received.
+data SshMsgDisconnectException
+  = SshMsgDisconnectException
+    { smdeReason :: SshDiscReason
+    , smdeMsg    :: S.ByteString
+    , smdeLang   :: S.ByteString
+    }
+  deriving Show
+instance Exception SshMsgDisconnectException
 
 parseFrom :: HandleLike -> IORef S.ByteString -> Get a -> IO a
 parseFrom handle buffer body =
