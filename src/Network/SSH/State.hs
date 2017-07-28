@@ -42,12 +42,13 @@ debug = debugWithLevel . sshDebugLevel
 -- available.
 debugWithLevel :: Int -> String -> IO ()
 debugWithLevel debugLevel msg = do
-  when (debugLevel > 0) $
-    cLog $ "debug: " ++ msg
+  when (debugLevel > 0) $ do
+    tid <- myThreadId
+    safeLog $ "ssh-hans: " ++ show tid ++ ": " ++ msg
 
 -- | Safe console logger.
-cLog :: String -> IO ()
-cLog = putStrLn . sanitizeControlChars
+safeLog :: String -> IO ()
+safeLog = putStrLn . sanitizeControlChars
 
 -- | Replace control chars to avoid terminal attacks.
 --
@@ -339,9 +340,7 @@ receive h SshState { .. } = loop
        writeIORef sshRecvState (seqNum1, cipher, activeCipher', mac, decomp)
        case msg of
          SshMsgIgnore _                      -> loop
-         -- XXX: should do control char filtering, based on this,
-         -- everywhere!
-         SshMsgDebug display m _ | display   -> do cLog (S8.unpack m)
+         SshMsgDebug display m _ | display   -> do safeLog (S8.unpack m)
                                                    loop -- XXX drop controls
                                  | otherwise -> loop
          SshMsgDisconnect reason msg' _lang   ->

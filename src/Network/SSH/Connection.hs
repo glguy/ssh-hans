@@ -60,7 +60,7 @@ connectionSend msg = Connection $
      liftIO (send h state msg)
 
 connectionLog :: String -> Connection ()
-connectionLog msg = Connection $ liftIO (cLog msg)
+connectionLog msg = Connection $ liftIO (safeLog msg)
 
 debug' :: String -> Connection ()
 debug' msg = Connection $
