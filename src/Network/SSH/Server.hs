@@ -90,7 +90,7 @@ sshServer sock = forever $
          -- out of scope when this thread dies.
      let cleanup = do
            debug' "main loop exiting, closing client connection"
-           -- TODO: add back @cClose h@.
+           cClose h
      forkIO $ (handleClient `X.catch` handleDisconnectException)
               `X.finally` cleanup
   where

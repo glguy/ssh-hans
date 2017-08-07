@@ -25,7 +25,7 @@ import           Network.SSH.Rekey
 import           Network.SSH.Server ( sayHello )
 import           Network.SSH.State
 
-import           Control.Concurrent.Async ( withAsync )
+import qualified Control.Concurrent.Async as A
 import qualified Control.Exception as X
 import           Control.Monad ( when )
 import qualified Data.ByteString.Char8 as S
@@ -65,8 +65,23 @@ data ClientState = ClientState
 
 -- | Run an SSh client.
 --
+-- Returns a function that kills the client (closes the connection
+-- with the server).
+--
 -- See 'mkDefaultClientState' for configuration details.
-sshClient :: ClientState -> IO ()
+--
+-- Idea: a better API might be to have the 'ClientState' carry enough
+-- information to shut down the client, and then just have a function
+--
+-- > killClient :: ClientSt -> IO ()
+--
+-- Then we could generalize to other actions, like
+--
+-- > openChannel :: ClientSt -> <channel ingredients> -> IO ()
+--
+-- instead of requiring that all of the client's logic be wrapped up
+-- in its hooks at start time.
+sshClient :: ClientState -> IO (IO ())
 sshClient clientSt = do
   -- The '[]' is "server credentials", i.e. server private keys; we
   -- might want client keys here?
@@ -90,16 +105,22 @@ sshClient clientSt = do
   debug state "auth done!"
 
   debug state "starting channel loop ..."
-  -- Kill the connection service when this thread exits.
   let sh = defaultSessionHandlers
-  withAsync (runConnection sh h state connectionService) $ \_ -> do
-    debug state "channel loop started!"
+  connection <- A.async $ runConnection sh h state connectionService
+  debug state "channel loop started!"
+  debug state "running channel hook ..."
+  maybe (return ()) (\f -> f h state)
+    (csChannelHook clientSt)
+  debug state "channel hook finished!"
 
-    debug state "running channel hook ..."
-    maybe (return ()) (\f -> f h state)
-      (csChannelHook clientSt)
-    debug state "channel hook finished!"
-    debug state "exiting ..."
+  -- There may be more involved in properly killing a client ...  if
+  -- thread killing the client here doesn't work well in some cases,
+  -- then another option is to have the 'connectionService' loop read
+  -- a mutable ref and exit if the ref says to.
+  let killClient = do
+        send h state $ SshMsgDisconnect SshDiscByApplication "" ""
+        A.cancel connection
+  return killClient
 
 -- | Make a client state with reasonable defaults.
 --
