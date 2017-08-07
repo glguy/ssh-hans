@@ -168,7 +168,7 @@ sendChannelOpenSession = do
 --
 -- Returns read and write functions for interacting with them via the
 -- channel. Sending 'Nothing' to the write function closes the
--- channel.
+-- channel; see 'closeChannel' below.
 sendChannelRequestSubsystem ::
   ChannelId  -> S.ByteString ->
   Connection (IO SessionEvent, Maybe S.ByteString -> IO ())
@@ -201,6 +201,27 @@ sendChannelRequestSubsystem id_us subsystem = do
   return ( mkChannelReader sh h state id_us
          , mkChannelWriter sh h state id_us
          )
+
+-- | Initiate and complete a channel close.
+--
+-- A channel is closed when both sides have sent and received a
+-- 'SessionClose' event.
+--
+-- This function initiates a channel close. The recipient of a
+-- 'SessionClose' event should simply reply with 'SessionClose' by
+-- writing 'Nothing'.
+closeChannel :: IO SessionEvent -> (Maybe S.ByteString -> IO ()) -> IO ()
+closeChannel readEvent writeBs = do
+  -- Send 'SessionClose'.
+  writeBs Nothing
+  readUntilClose
+  where
+    readUntilClose = do
+      event <- readEvent
+      when (event /= SessionClose) $ do
+        debugWithLevel 1 $
+          "closeChannel: unexpected event: "++show event
+        readUntilClose
 
 ----------------------------------------------------------------
 -- * Main loop for receiving channel messages in a client or server.
