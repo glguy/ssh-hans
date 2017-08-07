@@ -32,24 +32,7 @@ To generate a new, password-less OpenSSH format key:
 Bugs
 ----
 
-1. Closing a session channel kills the connection.
-
-This is only a problem when opening more than one channel, and
-shouldn't be hard to fix. Problem is illustrated in this commit:
-
-    commit a5f250212e6e07fc55df7a4f0c6d01d25a81324e
-    Author: Nathan Collins <conathan@galois.com>
-    Date:   Fri Dec 25 01:34:49 2015 -0800
-
-        Illustrate channel close bug.
-
-        Running multiple echo clients concurrently we see that the first to
-        close its connection causes the server to clean its channel up to
-        soon, causing the server's channel handler loop for that client to
-        crash when that channel is later looked up again.
-
-
-2. Some OpenSSH 5.3 servers advertise support for "hmac-sha2-512", but
+1. Some OpenSSH 5.3 servers advertise support for "hmac-sha2-512", but
 kex fails when this algorithm is selected for MAC in either
 direction. According to OpenSSH docs [1], support for "hmac-sha2-512"
 was not added until version 5.9, so I'm not sure why 5.3 servers are
