@@ -2,8 +2,13 @@ SSH Server
 ==========
 
 The server program `server` takes a port number as argument and
-listens on the given TCP port. Connecting to the server presents you
-with an ASCII version of the popular Set game.
+listens on the given TCP port. The server exposes these services:
+- terminal connections, e.g. via `ssh localhost`: ASCII version of the
+  popular Set game!
+- "echo" command, e.g. via `ssh localhost echo`: echos back whatever
+  you type.
+- "echo" subsystem, e.g. via `ssh localhost -s echo`: echos back
+  whatever you type
 
 The server expects to find a private key in a `server_keys` file in
 the directory the server is started in. This file must be in OpenSSH
@@ -35,3 +40,10 @@ Start the server:
 Connect to the server and play set:
 
     ssh localhost -p 2200
+
+Connect to the echo service:
+
+    # As an exec request:
+    ssh localhost -p 2200 echo
+    # Or as a subsystem:
+    ssh localhost -p 2200 -s echo

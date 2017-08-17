@@ -146,7 +146,7 @@ echoServer readEvent write = loop
     do event <- readEvent
        case event of
          SessionData xs   -> write (Just xs) >> loop
-         SessionEof       -> write Nothing
-         SessionClose     -> return ()
+         SessionEof       -> loop
+         SessionClose     -> write Nothing
          SessionWinsize{} -> loop
          SessionRequestResponse{} -> loop

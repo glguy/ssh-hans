@@ -31,6 +31,7 @@ import           Data.Word
 
 import           Control.Monad.IO.Class
 import           Control.Monad.Trans.Reader (ask, ReaderT(..), runReaderT)
+import           Text.Printf
 
 #if !MIN_VERSION_base(4,8,0)
 import           Control.Applicative
@@ -620,9 +621,9 @@ handleChannelData channelId bytes =
 -- the above examples.
 handleChannelRequest ::
   SshChannelRequest -> ChannelId -> Bool -> Connection ()
-handleChannelRequest request channelId wantReply = do
+handleChannelRequest request id_us wantReply = do
   (sh, h, state) <- Connection ask
-  id_them <- sshChannelId_them <$> connectionGetChannel channelId
+  id_them <- sshChannelId_them <$> connectionGetChannel id_us
   if sshRole state == ClientRole
   -- Most of the channel requests are supposed to be ignored by the
   -- client. Ignore them all for now.
@@ -631,7 +632,8 @@ handleChannelRequest request channelId wantReply = do
   -- leave it up to the library user to decide whether these requests
   then connectionSend $ SshMsgChannelFailure id_them
   else do
-    successIO <- connectionModifyChannelWithResult channelId
+    debugRequest
+    successIO <- connectionModifyChannelWithResult id_us
                    (go sh h state)
     success   <- liftIO successIO
     when wantReply $ connectionSend $
@@ -640,6 +642,16 @@ handleChannelRequest request channelId wantReply = do
       else SshMsgChannelFailure id_them
 
   where
+  -- | Print debug messages related to request.
+  debugRequest :: Connection ()
+  debugRequest = case request of
+    SshChannelRequestShell ->
+      debug' $ printf "shell request on channel %i" id_us
+    SshChannelRequestExec command ->
+      debug' $ printf "exec request on channel %i: %s" id_us (C8.unpack command)
+    SshChannelRequestSubsystem subsystem ->
+      debug' $ printf "subsystem request on channel %i: %s" id_us (C8.unpack subsystem)
+    _ -> return ()
   -- | Handle a request while possibly modifying the channel.
   --
   -- Returns a computation which determines if the request was
@@ -693,8 +705,8 @@ handleChannelRequest request channelId wantReply = do
            Just (term,winsize,termios) -> do
              let continuation =
                    cOpenShell sh term winsize termios
-                     (mkChannelReader sh h state channelId)
-                     (mkChannelWriter sh h state channelId)
+                     (mkChannelReader sh h state id_us)
+                     (mkChannelWriter sh h state id_us)
              guardBackendRequest continuation
 
     -- TODO(conathan): this request ("exec") and the "subsystem"
@@ -702,15 +714,15 @@ handleChannelRequest request channelId wantReply = do
     SshChannelRequestExec command ->
       do let continuation =
                cRequestExec sh command
-                 (mkChannelReader sh h state channelId)
-                 (mkChannelWriter sh h state channelId)
+                 (mkChannelReader sh h state id_us)
+                 (mkChannelWriter sh h state id_us)
          guardBackendRequest continuation
 
     SshChannelRequestSubsystem subsystem ->
       do let continuation =
                cRequestSubsystem sh subsystem
-                 (mkChannelReader sh h state channelId)
-                 (mkChannelWriter sh h state channelId)
+                 (mkChannelReader sh h state id_us)
+                 (mkChannelWriter sh h state id_us)
          guardBackendRequest continuation
 
     SshChannelRequestWindowChange winsize ->
@@ -738,7 +750,7 @@ handleChannelRequest request channelId wantReply = do
               success <- k
               when success $
                 runConnection sh h state $
-                  connectionModifyChannel channelId $ \channel' ->
+                  connectionModifyChannel id_us $ \channel' ->
                     channel'
                       { sshChannelState = SshChannelStateBackendRunning }
               return success

@@ -15,10 +15,10 @@ import           Network
                    , connectTo, withSocketsDo )
 
 import           Control.Concurrent.Async
+import qualified Control.Concurrent as C
 import           Control.Monad ( void, when )
 import qualified Data.ByteString.Char8 as S8
 import           System.Environment
-import           System.IO
 
 #if MIN_VERSION_base(4,8,0)
 import           System.Exit ( die )
@@ -61,16 +61,23 @@ main = do
   let getPw   = Just $ defaultGetPassword user host
   let prefs   = Just proposalPrefs
   let transportHook = Nothing
+  -- Use an 'MVar' to tell the main thread when to clean up and
+  -- exit. Recall that in Haskell, all other threads get killed when
+  -- the main thread exits.
+  doneMVar <- C.newEmptyMVar
   let channelHook   = Just $ \h state -> do
         let e k = echoChannelHook k h state
         void $ mapConcurrently e [10..20]
+        C.putMVar doneMVar ()
   let debugLevel = 1
 
   clientSt   <- defaultClientState
                   debugLevel
                   version user host port handle getPw
                   keyFile prefs transportHook channelHook
-  sshClient clientSt
+  killClient <- sshClient clientSt
+  void $ C.takeMVar doneMVar
+  killClient
   -- Might be useful for sending keys to server later.
   {-
      home    <- getHomeDirectory
@@ -92,7 +99,7 @@ echoChannelHook stop h state = do
   debug state "starting echo loop ..."
   let echoLoop :: Integer -> IO ()
       echoLoop n
-        | stop == n = write Nothing
+        | stop == n = closeChannel readEvent write
         | otherwise = do
         let msg = S8.pack (show n)
         debug state $ "sending: " ++ show id_us ++ ": " ++ S8.unpack msg
