@@ -2,12 +2,21 @@ resolver: lts-9.0
 
 packages:
 - .
+# This new version of `setgame` went up on Hackage today, but Stackage
+# doesn't know about it yet :P
+- location:
+    git: git@github.com:glguy/set-game.git
+    commit: e1565930ec9cb09fb3735775ed52b85bfc5335c8
+  extra-dep: true
 
 # Dependency packages to be pulled from upstream that are not in the resolver
 # (e.g., acme-missiles-0.3)
 extra-deps:
-- cryptonite-0.20
+- cryptonite-0.18
 - memory-0.13
+- directory-1.2.7.1
+- setgame-1.2
+- vty-5.17
 
 # Override default flag values for local packages and extra-deps
 flags: {}
