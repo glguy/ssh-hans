@@ -120,13 +120,15 @@ mkSessionHandlers creds = SessionHandlers { .. }
          in loop
 
        let config = Vty.Config
-                      { Vty.vmin     = Just 1
-                      , Vty.vtime    = Just 0
-                      , Vty.debugLog = Nothing
-                      , Vty.inputMap = []
-                      , Vty.inputFd  = Just slaveFd
-                      , Vty.outputFd = Just slaveFd
-                      , Vty.termName = Just (S8.unpack term)
+                      { Vty.vmin               = Just 1
+                      , Vty.vtime              = Just 0
+                      , Vty.mouseMode          = Nothing
+                      , Vty.bracketedPasteMode = Nothing
+                      , Vty.debugLog           = Nothing
+                      , Vty.inputMap           = []
+                      , Vty.inputFd            = Just slaveFd
+                      , Vty.outputFd           = Just slaveFd
+                      , Vty.termName           = Just (S8.unpack term)
                       }
 
        void $ forkIO $ do
