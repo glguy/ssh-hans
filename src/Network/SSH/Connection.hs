@@ -529,10 +529,12 @@ handleChannelOpenDirectTcp channelId_them initialWindowSize_them maximumPacket_t
 
 -- | Handle a window adjust request from them.
 handleChannelWindowAdjust :: ChannelId -> Word32 -> Connection ()
-handleChannelWindowAdjust channelId adj =
-  do debug' $
+handleChannelWindowAdjust channelId adj = do
+     {-
+     debug' $
        "received window adjust: channel: " ++ show channelId ++
        ", adjust size: " ++ show adj
+     -}
      connectionModifyChannel channelId $ \channel ->
        let !w = sshChannelWindowSize_them channel + adj in
        channel { sshChannelWindowSize_them = w }
@@ -918,9 +920,11 @@ channelRead id_us = do
   -- Adjust window size if necessary.
   when (windowAdjustSize > 0) $ do
     id_them <- sshChannelId_them <$> connectionGetChannel id_us
+    {-
     debug' $
       "sent window adjust: channel: " ++ show id_them ++
       ", adjust size: " ++ show windowAdjustSize
+    -}
     connectionSend (SshMsgChannelWindowAdjust id_them windowAdjustSize)
 
   -- Change channel closure state if necessary.
