@@ -1,0 +1,10 @@
+resolver: nightly-2017-10-23
+
+packages:
+- .
+
+extra-deps:
+- directory-1.2.7.1
+- setgame-1.1
+- time-1.7.0.1
+- vty-5.17.1

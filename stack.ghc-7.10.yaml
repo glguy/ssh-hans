@@ -9,9 +9,9 @@ packages:
 
 # Packages to be pulled from upstream that are not in the resolver (e.g., acme-missiles-0.3)
 extra-deps:
-- vty-5.4.0
+- vty-5.8
 - cereal-0.5.1.0
-- cryptonite-0.8
+- cryptonite-0.14
 - memory-0.10
 - setgame-1.1
 

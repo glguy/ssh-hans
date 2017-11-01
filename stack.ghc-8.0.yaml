@@ -6,8 +6,7 @@ packages:
 # Dependency packages to be pulled from upstream that are not in the resolver
 # (e.g., acme-missiles-0.3)
 extra-deps:
-- cryptonite-0.18
-- memory-0.13
+- memory-0.14.8
 - directory-1.2.7.1
 - setgame-1.1
 - vty-5.17
