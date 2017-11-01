@@ -33,9 +33,9 @@ necessary:
 
 Start the server:
 
-    # Assumes you did `ln -s stack.ghc-7.10.yaml stack.yaml` in `..`.
+    # Assumes you did `ln -s stack.ghc-8.2.1.yaml stack.yaml` in `..`.
     stack build
-    stack exec server 2200
+    stack exec ssh-hans-example-server 2200
 
 Connect to the server and play set:
 

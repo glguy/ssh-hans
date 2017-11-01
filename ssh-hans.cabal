@@ -4,9 +4,9 @@ synopsis:            Implementation of the SSH2.0 protocol
 description:         Implementation of the SSH2.0 protocol
 license:             BSD3
 license-file:        LICENSE
-author:              Trevor Elliott
-maintainer:          trevor@galois.com
-copyright:           2014-2015 Galois Inc, Trevor Elliott, Eric Mertens
+author:              Trevor Elliott, Eric Mertens, Nathan Collins
+maintainer:          conathan@galois.com
+copyright:           2014-2017 Galois Inc, Trevor Elliott, Eric Mertens, Nathan Collins
 category:            Network
 build-type:          Simple
 cabal-version:       >=1.10
@@ -20,11 +20,6 @@ flag support_compression
   description:         Support zlib compression, which introduces a dependency on zlib. Compression is permanently disabled when building on HaLVM.
   default:             True
   manual:              True
-
-flag build_examples
-  description:         Build the example client and server. The examples are permanently disabled when building on HaLVM.
-  default:             False
-  manual:              False
 
 library
   exposed-modules:     Network.SSH.Server
@@ -77,10 +72,10 @@ library
     extra-libraries:     z
     cpp-options:         -DSSH_HANS_SUPPORT_COMPRESSION
 
-executable client
+executable ssh-hans-example-client
   main-is:             Main.hs
   other-modules:       Openpty, UnixTerminalFlags
-  if os(halvm) || !flag(build_examples)
+  if os(halvm)
     buildable:         False
   else
     build-depends:     base         >=4.7,
@@ -93,10 +88,10 @@ executable client
     default-language:  Haskell2010
     ghc-options:       -Wall -threaded
 
-executable server
+executable ssh-hans-example-server
   main-is:             Main.hs
   other-modules:       Openpty, UnixTerminalFlags
-  if os(halvm) || !flag(build_examples)
+  if os(halvm)
     buildable:         False
   else
     build-depends:     base         >=4.7,

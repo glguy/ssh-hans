@@ -8,34 +8,47 @@ import           Network.SSH.LoadKeys
 import           Network.SSH.Messages
 import           Network.SSH.Server
 
-import           Control.Monad
+import           Control.Concurrent
 import           Control.Exception
+import           Control.Monad
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Char8 as S8
+import qualified Graphics.Vty as Vty
 import           Network
                      ( PortID(..), withSocketsDo, listenOn
                      , accept, Socket )
+import           System.Directory (getHomeDirectory)
+import           System.Environment
+import           System.FilePath
 import           System.IO ( hClose )
 import           System.IO.Error ( isIllegalOperation )
+import           System.Posix.IO ( fdToHandle, closeFd )
+import           Text.Read (readMaybe)
 
-import System.Posix.IO ( fdToHandle, closeFd )
-import Control.Concurrent
-import System.FilePath
-import System.Environment
-import System.Directory (getHomeDirectory)
 import qualified SetGame
-import qualified Graphics.Vty as Vty
 
-import Openpty
-import UnixTerminalFlags
+import           Openpty
+import           UnixTerminalFlags
+
+#if MIN_VERSION_base(4,8,0)
+import           System.Exit ( die )
+#else
+import           System.Exit ( exitFailure )
+die :: String -> IO a
+die err = hPutStrLn stderr err >> exitFailure
+#endif
 
 main :: IO ()
 main = withSocketsDo $
   do args <- getArgs
-     let port = case args of
-          [portString] -> fromInteger $ read portString
-          _            -> error "usage: server LISTEN_PORT"
-     sock    <- listenOn (PortNumber port)
+     progName <- getProgName
+     let usage = die $ "usage: "++progName++" LISTEN_PORT"
+     port <- case args of
+       [portString] -> do
+         let mPort = readMaybe portString
+         maybe usage return mPort
+       _            -> usage
+     sock    <- listenOn (PortNumber $ fromInteger port)
      sAuth   <- loadPrivateKeys "server_keys"
 
      home    <- getHomeDirectory

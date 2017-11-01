@@ -38,14 +38,15 @@ die err = hPutStrLn stderr err >> exitFailure
 -- hour or every GB of traffic, whichever comes first.
 
 -- TODO(conathan): add real argument parsing? E.g., OpenSSh uses your
--- current username unless you put '<user>@' in from of the host name.
+-- current username unless you put '<user>@' in front of the host name.
 main :: IO ()
 main = do
   args <- getArgs
   when ("-h" `elem` args || "--help" `elem` args ||
-        not (length args `elem` [3,4])) $
+        not (length args `elem` [3,4])) $ do
+    progName <- getProgName
     die . unlines $
-      [ "usage: client USER SERVER_ADDR SERVER_PORT [PRIVATE_KEY]"
+      [ "usage: "++progName++" USER SERVER_ADDR SERVER_PORT [PRIVATE_KEY]"
       , ""
       , "The optional private key file must be in OpenSSH format;"
       , "see `:/client/README.md` for details."
