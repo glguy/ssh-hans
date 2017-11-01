@@ -48,14 +48,11 @@ library
                        Crypto.MAC.UMAC
 
   -- The cryptonite lower bound is based on 0.14 being the earliest
-  -- version with 'DH.param_bits' included. The cryptonite upper bound
-  -- of 0.19 is based on the example client crashing when interacting
-  -- with the example server on 0.19 and 0.20, but not on 0.18. Other
-  -- intermediate versions have not been tested.
+  -- version with 'DH.param_bits'.
   build-depends:       base         >=4.7      && <4.10,
                        cereal       >=0.5.1.0  && <0.6,
                        bytestring   >=0.10.4.0 && <0.11,
-                       cryptonite   >=0.14     && <0.19,
+                       cryptonite   >=0.14,
                        memory       >=0.10     && <0.14,
                        transformers >=0.2      && <0.6,
                        containers   >=0.5.5.1  && <0.6,
