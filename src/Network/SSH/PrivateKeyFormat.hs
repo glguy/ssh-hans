@@ -192,30 +192,30 @@ extractPK pkf =
 -- | Merge multiple new OpenSSH private key files into a single one
 -- The file format as defined supports this though openssh doesn't
 -- appear to actually handle it correctly.
-mergePrivateKeys :: [S.ByteString] -> Either String S.ByteString
-mergePrivateKeys xs =
-  do pkfs1 <- traverse parsePrivateKeyFile xs
-     pkf   <- case pkfs1 of
-                [] -> Left "No private key files"
-                pkf:_ -> return pkf
-
-     priv:privs <- traverse (removePadding . pkfPrivateKeys) pkfs1
-
-     let discardCheckBytes = S.drop 8
-         pkf' = pkf { pkfPublicKeys = pkfPublicKeys =<< pkfs1
-                    , pkfPrivateKeys = addPadding
-                                     $ priv
-                            `S.append` S.concat (map discardCheckBytes privs)
-                    }
-
-         lineLen = 70 -- to match openssh's behavior
-         dataLine = convertToBase Base64 (runPut (putPrivateKeyFile pkf'))
-
-     return $ S8.unlines $ [ armorHeader ]
-                        ++ chunks lineLen dataLine
-                        ++ [ armorFooter ]
-
-
+--mergePrivateKeys :: [S.ByteString] -> Either String S.ByteString
+--mergePrivateKeys xs =
+--  do pkfs1 <- traverse parsePrivateKeyFile xs
+--     pkf   <- case pkfs1 of
+--                [] -> Left "No private key files"
+--                pkf:_ -> return pkf
+--
+--     priv:privs <- traverse (removePadding . pkfPrivateKeys) pkfs1
+--
+--     let discardCheckBytes = S.drop 8
+--         pkf' = pkf { pkfPublicKeys = pkfPublicKeys =<< pkfs1
+--                    , pkfPrivateKeys = addPadding
+--                                     $ priv
+--                            `S.append` S.concat (map discardCheckBytes privs)
+--                    }
+--
+--         lineLen = 70 -- to match openssh's behavior
+--         dataLine = convertToBase Base64 (runPut (putPrivateKeyFile pkf'))
+--
+--     return $ S8.unlines $ [ armorHeader ]
+--                        ++ chunks lineLen dataLine
+--                        ++ [ armorFooter ]
+--
+--
 
 
 chunks :: Int -> S.ByteString -> [S.ByteString]
